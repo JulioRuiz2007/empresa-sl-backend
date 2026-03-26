@@ -854,7 +854,39 @@ def cancelar_cita_post(req: CancelarConIdRequest):
 # ═══════════════════════════════════════════════════════════════
 # EJECUTAR
 # ═══════════════════════════════════════════════════════════════
+# ═══════════════════════════════════════════════════════════════
+# RUTAS ALTERNATIVAS PARA RETELL (solo acepta GET y POST)
+# ═══════════════════════════════════════════════════════════════
 
+from pydantic import BaseModel as PydanticBaseModel
+
+class ModificarConIdRequest(PydanticBaseModel):
+    cita_id: int
+    nueva_fecha: Optional[str] = None
+    nueva_hora: Optional[str] = None
+    nuevo_estilista_id: Optional[str] = None
+    nuevo_servicio_id: Optional[str] = None
+    notas: Optional[str] = None
+
+class CancelarConIdRequest(PydanticBaseModel):
+    cita_id: int
+
+@app.post("/citas/modificar", summary="Modificar cita (vía POST para Retell)")
+def modificar_cita_post(req: ModificarConIdRequest):
+    """Ruta alternativa POST para Retell AI que no soporta PUT."""
+    mod_req = ModificarCitaRequest(
+        nueva_fecha=req.nueva_fecha,
+        nueva_hora=req.nueva_hora,
+        nuevo_estilista_id=req.nuevo_estilista_id,
+        nuevo_servicio_id=req.nuevo_servicio_id,
+        notas=req.notas,
+    )
+    return modificar_cita(req.cita_id, mod_req)
+
+@app.post("/citas/cancelar", summary="Cancelar cita (vía POST para Retell)")
+def cancelar_cita_post(req: CancelarConIdRequest):
+    """Ruta alternativa POST para Retell AI que no soporta DELETE."""
+    return cancelar_cita(req.cita_id)
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
