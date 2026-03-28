@@ -615,14 +615,29 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
 
     conn = get_db()
 
-    # Resolver estilista
-    if req.estilista_id == "cualquiera":
+    # Resolver estilista — acepta ID ("maria") o nombre completo ("María García")
+    def _resolver_estilista_id(valor: str):
+        """Devuelve el objeto estilista buscando por ID o por nombre (fuzzy)."""
+        est = obtener_estilista(valor)
+        if est:
+            return est
+        # Buscar por nombre (case-insensitive, sin acentos)
+        import unicodedata
+        def normalizar(s):
+            return unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode()
+        valor_norm = normalizar(valor)
+        for e in ESTILISTAS:
+            if normalizar(e["nombre"]) == valor_norm or normalizar(e["id"]) == valor_norm:
+                return e
+        return None
+
+    if req.estilista_id in ("cualquiera", "any", ""):
         estilista = buscar_mejor_estilista(conn, req.servicio_id, fecha_dt, hora_norm, servicio["duracion_min"])
         if not estilista:
             conn.close()
             raise HTTPException(409, "No hay estilistas disponibles para ese servicio, fecha y hora.")
     else:
-        estilista = obtener_estilista(req.estilista_id)
+        estilista = _resolver_estilista_id(req.estilista_id)
         if not estilista:
             conn.close()
             raise HTTPException(404, f"Estilista '{req.estilista_id}' no encontrado.")
@@ -667,7 +682,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
             req.servicio_id,
             estilista["id"],
             fecha_dt.isoformat(),
-            req.hora,
+            hora_norm,
             hora_fin_str,
             servicio["duracion_min"],
             servicio["precio"],
@@ -683,9 +698,12 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
     background_tasks.add_task(
         _bg_gcal_crear, cita_id,
         f"{servicio['nombre']} — {req.cliente_nombre} (con {estilista['nombre']})",
-        req.fecha, req.hora, hora_fin_str, req.notas, req.servicio_id, req.cliente_telefono,
+        fecha_dt.isoformat(), hora_norm, hora_fin_str, req.notas, req.servicio_id, req.cliente_telefono,
     )
 
+    dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+    meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+    fecha_legible = f"{dias_es[fecha_dt.weekday()]} {fecha_dt.day} de {meses_es[fecha_dt.month-1]}"
     nombre_corto = req.cliente_nombre.split()[0]
     return {
         "exito": True,
@@ -695,15 +713,16 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
             "telefono": req.cliente_telefono,
             "servicio": servicio["nombre"],
             "estilista": estilista["nombre"],
-            "fecha": req.fecha,
-            "hora_inicio": req.hora,
+            "fecha": fecha_dt.isoformat(),
+            "fecha_legible": fecha_legible,
+            "hora_inicio": hora_norm,
             "hora_fin": hora_fin_str,
             "duracion_min": servicio["duracion_min"],
             "precio_desde": servicio["precio"],
             "notas": req.notas,
         },
-        "mensaje": f"Cita confirmada: {servicio['nombre']} con {estilista['nombre']} el {req.fecha} a las {req.hora}.",
-        "mensaje_voz": f"¡Perfecto, {nombre_corto}! Ya te he reservado {servicio['nombre']} con {estilista['nombre']} para el {req.fecha} a las {req.hora}. Durará aproximadamente {servicio['duracion_min']} minutos y el precio es desde {servicio['precio']:.0f} euros. ¿Necesitas algo más?",
+        "mensaje": f"Cita confirmada: {servicio['nombre']} con {estilista['nombre']} el {fecha_legible} a las {hora_norm}.",
+        "mensaje_voz": f"¡Perfecto, {nombre_corto}! Ya te he reservado {servicio['nombre']} con {estilista['nombre']} para el {fecha_legible} a las {hora_norm}. Durará aproximadamente {servicio['duracion_min']} minutos y el precio es desde {servicio['precio']:.0f} euros. ¿Necesitas algo más?",
     }
 
 
