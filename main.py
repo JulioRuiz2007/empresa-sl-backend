@@ -572,12 +572,25 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
     if not horario:
         raise HTTPException(400, f"El salón está cerrado los {dia_nombre(fecha_dt)}s.")
 
-    # Normalizar hora: "9" → "09:00", "9:00" → "09:00"
-    hora_norm = req.hora.strip()
-    if ":" not in hora_norm:
-        hora_norm = hora_norm.zfill(2) + ":00"
-    elif len(hora_norm.split(":")[0]) == 1:
-        hora_norm = "0" + hora_norm
+    # Normalizar hora: "9" → "09:00", "9:00" → "09:00", "2 de la tarde" → "14:00"
+    import re as _re_hora
+    hora_norm = req.hora.strip().lower()
+    # Detectar "de la tarde" / "pm" → convertir a 24h
+    es_tarde = bool(_re_hora.search(r"(tarde|pm)", hora_norm))
+    hora_norm = _re_hora.sub(r"\s*(de\s+la\s+tarde|de\s+la\s+mañana|de\s+la\s+manana|pm|am)\s*", "", hora_norm).strip()
+    # Extraer solo dígitos y ":"
+    m_hora = _re_hora.match(r"^(\d{1,2})(?:[:\s](\d{2}))?", hora_norm)
+    if m_hora:
+        h = int(m_hora.group(1))
+        mins = m_hora.group(2) or "00"
+        if es_tarde and h < 12:
+            h += 12
+        hora_norm = f"{h:02d}:{mins}"
+    else:
+        if ":" not in hora_norm:
+            hora_norm = hora_norm.zfill(2) + ":00"
+        elif len(hora_norm.split(":")[0]) == 1:
+            hora_norm = "0" + hora_norm
 
     try:
         hora_inicio = datetime.strptime(hora_norm, "%H:%M").time()
