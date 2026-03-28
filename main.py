@@ -102,7 +102,9 @@ def parsear_fecha(texto: str) -> date:
     'hoy', '5 de abril', '30 de marzo', etc.
     """
     import re as _re
-    texto = _re.sub(r"^(el|la)\s+", "", texto.strip().lower()).strip()
+    texto = texto.strip().lower()
+    texto = _re.sub(r"^(el|la)\s+", "", texto).strip()
+    texto = _re.sub(r"\b(que viene|próximo|proximo|este|esta)\b", "", texto).strip()
     hoy = date.today()
 
     # Formato estándar
