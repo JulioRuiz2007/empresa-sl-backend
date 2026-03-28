@@ -164,47 +164,125 @@ def parsear_fecha(texto: str) -> date:
 # BASE DE DATOS
 # ═══════════════════════════════════════════════════════════════
 
+DATABASE_URL = os.getenv("DATABASE_URL")  # PostgreSQL en Railway; None = SQLite local
 DB_PATH = os.path.join(os.path.dirname(__file__), "citas.db")
+
+_USE_PG = bool(DATABASE_URL)
+
+if _USE_PG:
+    import psycopg2
+    import psycopg2.extras
 
 
 def get_db():
+    if _USE_PG:
+        conn = psycopg2.connect(DATABASE_URL)
+        conn.autocommit = False
+        return conn
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     return conn
 
 
+def _exec(conn, sql, params=()):
+    """Ejecuta una query normalizando placeholders: ? (SQLite) → %s (PostgreSQL)."""
+    if _USE_PG:
+        sql = sql.replace("?", "%s")
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+        return conn
+    conn.execute(sql, params)
+    return conn
+
+
+def _query(conn, sql, params=()):
+    """Ejecuta una SELECT y devuelve lista de dicts (igual para SQLite y PostgreSQL)."""
+    if _USE_PG:
+        sql = sql.replace("?", "%s")
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+    return [dict(r) for r in conn.execute(sql, params).fetchall()]
+
+
+def _insert(conn, sql, params=()):
+    """INSERT devolviendo el id del nuevo registro."""
+    if _USE_PG:
+        sql = sql.replace("?", "%s")
+        if "RETURNING id" not in sql:
+            sql += " RETURNING id"
+        with conn.cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            return row[0]
+    cursor = conn.execute(sql, params)
+    return cursor.lastrowid
+
+
 def init_db():
     conn = get_db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS citas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            cliente_nombre TEXT NOT NULL,
-            cliente_telefono TEXT NOT NULL,
-            cliente_nuevo INTEGER DEFAULT 1,
-            servicio_id TEXT NOT NULL,
-            estilista_id TEXT NOT NULL,
-            fecha DATE NOT NULL,
-            hora_inicio TIME NOT NULL,
-            hora_fin TIME NOT NULL,
-            duracion_min INTEGER NOT NULL,
-            precio_estimado REAL NOT NULL,
-            notas TEXT DEFAULT '',
-            estado TEXT DEFAULT 'confirmada',
-            google_event_id TEXT DEFAULT '',
-            creada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            modificada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_citas_fecha_estilista
-        ON citas(fecha, estilista_id, estado)
-    """)
-    conn.execute("""
-        CREATE INDEX IF NOT EXISTS idx_citas_telefono
-        ON citas(cliente_telefono, estado)
-    """)
-    conn.commit()
+    if _USE_PG:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS citas (
+                    id SERIAL PRIMARY KEY,
+                    cliente_nombre TEXT NOT NULL,
+                    cliente_telefono TEXT NOT NULL,
+                    cliente_nuevo INTEGER DEFAULT 1,
+                    servicio_id TEXT NOT NULL,
+                    estilista_id TEXT NOT NULL,
+                    fecha DATE NOT NULL,
+                    hora_inicio TIME NOT NULL,
+                    hora_fin TIME NOT NULL,
+                    duracion_min INTEGER NOT NULL,
+                    precio_estimado REAL NOT NULL,
+                    notas TEXT DEFAULT '',
+                    estado TEXT DEFAULT 'confirmada',
+                    google_event_id TEXT DEFAULT '',
+                    creada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    modificada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_citas_fecha_estilista
+                ON citas(fecha, estilista_id, estado)
+            """)
+            cur.execute("""
+                CREATE INDEX IF NOT EXISTS idx_citas_telefono
+                ON citas(cliente_telefono, estado)
+            """)
+        conn.commit()
+    else:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS citas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                cliente_nombre TEXT NOT NULL,
+                cliente_telefono TEXT NOT NULL,
+                cliente_nuevo INTEGER DEFAULT 1,
+                servicio_id TEXT NOT NULL,
+                estilista_id TEXT NOT NULL,
+                fecha DATE NOT NULL,
+                hora_inicio TIME NOT NULL,
+                hora_fin TIME NOT NULL,
+                duracion_min INTEGER NOT NULL,
+                precio_estimado REAL NOT NULL,
+                notas TEXT DEFAULT '',
+                estado TEXT DEFAULT 'confirmada',
+                google_event_id TEXT DEFAULT '',
+                creada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                modificada_en TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_citas_fecha_estilista
+            ON citas(fecha, estilista_id, estado)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_citas_telefono
+            ON citas(cliente_telefono, estado)
+        """)
+        conn.commit()
     conn.close()
 
 
@@ -324,18 +402,25 @@ def estilista_hace_servicio(estilista: dict, servicio_id: str) -> bool:
 
 def obtener_citas_estilista(conn, estilista_id: str, fecha: date) -> list:
     """Obtiene todas las citas activas de un estilista en una fecha."""
-    rows = conn.execute(
+    return _query(
+        conn,
         "SELECT * FROM citas WHERE estilista_id = ? AND fecha = ? AND estado = 'confirmada' ORDER BY hora_inicio",
         (estilista_id, fecha.isoformat())
-    ).fetchall()
-    return [dict(r) for r in rows]
+    )
+
+
+def _parse_time(val) -> time:
+    """Convierte un valor a time: acepta str 'HH:MM' y objetos time (PostgreSQL)."""
+    if isinstance(val, time):
+        return val
+    return datetime.strptime(str(val)[:5], "%H:%M").time()
 
 
 def hay_conflicto(citas_existentes: list, hora_inicio: time, hora_fin: time, buffer: int) -> bool:
     """Comprueba si un nuevo hueco colisiona con citas existentes (incluyendo buffer)."""
     for cita in citas_existentes:
-        cita_inicio = datetime.strptime(cita["hora_inicio"], "%H:%M").time()
-        cita_fin = datetime.strptime(cita["hora_fin"], "%H:%M").time()
+        cita_inicio = _parse_time(cita["hora_inicio"])
+        cita_fin = _parse_time(cita["hora_fin"])
 
         # Añadir buffer después de la cita existente
         cita_fin_con_buffer = (datetime.combine(date.today(), cita_fin) + timedelta(minutes=buffer)).time()
@@ -484,7 +569,7 @@ def _bg_gcal_crear(cita_id: int, titulo: str, fecha: str, hora_inicio: str,
     )
     if google_event_id:
         conn = get_db()
-        conn.execute("UPDATE citas SET google_event_id = ? WHERE id = ?", (google_event_id, cita_id))
+        _exec(conn, "UPDATE citas SET google_event_id = ? WHERE id = ?", (google_event_id, cita_id))
         conn.commit()
         conn.close()
 
@@ -851,7 +936,8 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         }
 
     # Todo OK — crear la cita
-    cursor = conn.execute(
+    cita_id = _insert(
+        conn,
         """INSERT INTO citas
            (cliente_nombre, cliente_telefono, cliente_nuevo, servicio_id, estilista_id,
             fecha, hora_inicio, hora_fin, duracion_min, precio_estimado, notas, estado)
@@ -871,7 +957,6 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         )
     )
     conn.commit()
-    cita_id = cursor.lastrowid
 
     conn.close()
 
@@ -934,7 +1019,7 @@ def buscar_citas(
         params.append(estado)
 
     query += " ORDER BY fecha DESC, hora_inicio DESC"
-    rows = conn.execute(query, params).fetchall()
+    rows = _query(conn, query, params)
     conn.close()
 
     citas = []
@@ -992,9 +1077,8 @@ def buscar_citas(
 @app.put("/citas/{cita_id}", summary="Modificar una cita existente")
 def modificar_cita(cita_id: int, req: ModificarCitaRequest, background_tasks: BackgroundTasks):
     conn = get_db()
-    cita = conn.execute(
-        "SELECT * FROM citas WHERE id = ? AND estado = 'confirmada'", (cita_id,)
-    ).fetchone()
+    rows = _query(conn, "SELECT * FROM citas WHERE id = ? AND estado = 'confirmada'", (cita_id,))
+    cita = rows[0] if rows else None
 
     if not cita:
         conn.close()
@@ -1003,8 +1087,8 @@ def modificar_cita(cita_id: int, req: ModificarCitaRequest, background_tasks: Ba
     # Determinar nuevos valores
     nuevo_servicio_id = req.nuevo_servicio_id or cita["servicio_id"]
     nuevo_estilista_id = req.nuevo_estilista_id or cita["estilista_id"]
-    nueva_fecha_str = req.nueva_fecha or cita["fecha"]
-    nueva_hora = req.nueva_hora or cita["hora_inicio"]
+    nueva_fecha_str = req.nueva_fecha or str(cita["fecha"])
+    nueva_hora = req.nueva_hora or str(cita["hora_inicio"])[:5]
     nuevas_notas = req.notas if req.notas is not None else cita["notas"]
 
     servicio = obtener_servicio(nuevo_servicio_id)
@@ -1051,7 +1135,8 @@ def modificar_cita(cita_id: int, req: ModificarCitaRequest, background_tasks: Ba
         raise HTTPException(409, f"Ese horario no está disponible con {estilista['nombre']}.")
 
     # Actualizar
-    conn.execute(
+    _exec(
+        conn,
         """UPDATE citas SET
             servicio_id = ?, estilista_id = ?, fecha = ?, hora_inicio = ?,
             hora_fin = ?, duracion_min = ?, precio_estimado = ?, notas = ?,
@@ -1066,7 +1151,7 @@ def modificar_cita(cita_id: int, req: ModificarCitaRequest, background_tasks: Ba
     conn.close()
 
     # ── Google Calendar: actualizar evento en background ──
-    google_event_id = cita["google_event_id"] if "google_event_id" in cita.keys() else ""
+    google_event_id = cita.get("google_event_id", "")
     if google_event_id:
         background_tasks.add_task(
             _bg_gcal_modificar, google_event_id,
@@ -1101,9 +1186,8 @@ def modificar_cita(cita_id: int, req: ModificarCitaRequest, background_tasks: Ba
 @app.delete("/citas/{cita_id}", summary="Cancelar una cita")
 def cancelar_cita(cita_id: int, background_tasks: BackgroundTasks):
     conn = get_db()
-    cita = conn.execute(
-        "SELECT * FROM citas WHERE id = ? AND estado = 'confirmada'", (cita_id,)
-    ).fetchone()
+    rows = _query(conn, "SELECT * FROM citas WHERE id = ? AND estado = 'confirmada'", (cita_id,))
+    cita = rows[0] if rows else None
 
     if not cita:
         conn.close()
@@ -1112,16 +1196,13 @@ def cancelar_cita(cita_id: int, background_tasks: BackgroundTasks):
     servicio = obtener_servicio(cita["servicio_id"])
     estilista = obtener_estilista(cita["estilista_id"])
 
-    conn.execute(
-        "UPDATE citas SET estado = 'cancelada', modificada_en = CURRENT_TIMESTAMP WHERE id = ?",
-        (cita_id,)
-    )
+    _exec(conn, "UPDATE citas SET estado = 'cancelada', modificada_en = CURRENT_TIMESTAMP WHERE id = ?", (cita_id,))
     conn.commit()
 
     conn.close()
 
     # ── Google Calendar: eliminar evento en background ──
-    google_event_id = cita["google_event_id"] if "google_event_id" in cita.keys() else ""
+    google_event_id = cita.get("google_event_id", "")
     if google_event_id:
         background_tasks.add_task(_bg_gcal_cancelar, google_event_id)
 
@@ -1216,17 +1297,17 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
                 if hay_conflicto(citas_est, hora_inicio_t, hora_fin_t, buffer):
                     raise HTTPException(409, f"{estilista['nombre']} no está disponible para '{servicio['nombre']}' a las {hora_actual}.")
 
-            cursor = conn.execute(
+            cita_id = _insert(
+                conn,
                 """INSERT INTO citas
                    (cliente_nombre, cliente_telefono, cliente_nuevo, servicio_id, estilista_id,
                     fecha, hora_inicio, hora_fin, duracion_min, precio_estimado, notas, estado)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmada')""",
                 (req.cliente_nombre, req.cliente_telefono, 1 if req.cliente_nuevo else 0,
-                 sid, estilista["id"], req.fecha, hora_actual, hora_fin_str,
+                 sid, estilista["id"], fecha_dt.isoformat(), hora_actual, hora_fin_str,
                  servicio["duracion_min"], servicio["precio"], req.notas),
             )
             conn.commit()
-            cita_id = cursor.lastrowid
 
             citas_creadas.append({
                 "cita_id": cita_id,
@@ -1251,7 +1332,7 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
     except HTTPException:
         # Si algo falla a mitad del combo, cancelar las citas ya creadas
         for c in citas_creadas:
-            conn.execute("UPDATE citas SET estado = 'cancelada' WHERE id = ?", (c["cita_id"],))
+            _exec(conn, "UPDATE citas SET estado = 'cancelada' WHERE id = ?", (c["cita_id"],))
         conn.commit()
         conn.close()
         raise
