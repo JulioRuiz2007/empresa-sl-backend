@@ -431,9 +431,13 @@ def consultar_disponibilidad(
             huecos = [h for h in huecos if h >= hora_minima]
 
         if huecos:
+            # Seleccionar hasta 8 huecos representativos (4 mañana + 4 tarde)
+            manana = [h for h in huecos if h < "14:00"][:4]
+            tarde = [h for h in huecos if h >= "14:00"][:4]
+            huecos_muestra = manana + tarde
             resultado[est["nombre"]] = {
                 "estilista_id": est["id"],
-                "huecos_disponibles": huecos,
+                "huecos_disponibles": huecos_muestra,
                 "total_huecos": len(huecos),
             }
 
