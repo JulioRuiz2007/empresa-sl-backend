@@ -539,9 +539,11 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             "huecos": {},
         }
 
+    dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
     return {
         "disponible": True,
-        "fecha": fecha,
+        "fecha": fecha_dt.isoformat(),
+        "fecha_legible": f"{dias_es[fecha_dt.weekday()]} {fecha_dt.day} de {['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][fecha_dt.month-1]}",
         "servicio": servicio["nombre"],
         "duracion_min": servicio["duracion_min"],
         "precio_desde": servicio["precio"],
