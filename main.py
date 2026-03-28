@@ -662,12 +662,18 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         # Buscar alternativas cercanas
         huecos = encontrar_huecos_libres(conn, estilista["id"], fecha_dt, servicio["duracion_min"])
         conn.close()
-        sugerencias = huecos[:5] if huecos else []
-        raise HTTPException(409, {
-            "error": f"Ese horario no está disponible con {estilista['nombre']} (recuerda que necesitamos {buffer} min de descanso entre citas).",
+        sugerencias = huecos[:4] if huecos else []
+        if sugerencias:
+            opciones = ", ".join(f"las {h}" for h in sugerencias)
+            msg_voz = f"Uy, ese hueco de las {hora_norm} acaba de quedarse sin disponibilidad. Con {estilista['nombre']} ese día tengo hueco a {opciones}. ¿Te viene alguna?"
+        else:
+            msg_voz = f"Lo siento, ese día ya no tenemos más huecos disponibles con {estilista['nombre']}. ¿Probamos otro día?"
+        return {
+            "exito": False,
+            "conflicto": True,
             "alternativas_mismo_dia": sugerencias,
-            "mensaje": f"Huecos disponibles: {', '.join(sugerencias)}" if sugerencias else "No hay más huecos ese día con este estilista.",
-        })
+            "mensaje_voz": msg_voz,
+        }
 
     # Todo OK — crear la cita
     cursor = conn.execute(
