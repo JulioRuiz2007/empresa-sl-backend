@@ -85,8 +85,12 @@ DIAS_SEMANA_ES = {
 }
 
 DIAS_NOMBRE_A_NUM = {
+    # Español
     "lunes": 0, "martes": 1, "miércoles": 2, "miercoles": 2,
-    "jueves": 3, "viernes": 4, "sábado": 5, "sabado": 5, "domingo": 6
+    "jueves": 3, "viernes": 4, "sábado": 5, "sabado": 5, "domingo": 6,
+    # Inglés (el LLM a veces los envía en inglés)
+    "monday": 0, "tuesday": 1, "wednesday": 2,
+    "thursday": 3, "friday": 4, "saturday": 5, "sunday": 6,
 }
 
 MESES_ES = {
@@ -104,7 +108,7 @@ def parsear_fecha(texto: str) -> date:
     import re as _re
     texto = texto.strip().lower()
     texto = _re.sub(r"^(el|la)\s+", "", texto).strip()
-    texto = _re.sub(r"\b(que viene|próximo|proximo|este|esta)\b", "", texto).strip()
+    texto = _re.sub(r"\b(que viene|próximo|proximo|este|esta|next|this|coming)\b", "", texto).strip()
     hoy = date.today()
 
     # Formato estándar
