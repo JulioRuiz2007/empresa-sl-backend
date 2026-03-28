@@ -84,6 +84,64 @@ DIAS_SEMANA_ES = {
     3: "jueves", 4: "viernes", 5: "sábado", 6: "domingo"
 }
 
+DIAS_NOMBRE_A_NUM = {
+    "lunes": 0, "martes": 1, "miércoles": 2, "miercoles": 2,
+    "jueves": 3, "viernes": 4, "sábado": 5, "sabado": 5, "domingo": 6
+}
+
+MESES_ES = {
+    "enero": 1, "febrero": 2, "marzo": 3, "abril": 4, "mayo": 5, "junio": 6,
+    "julio": 7, "agosto": 8, "septiembre": 9, "octubre": 10, "noviembre": 11, "diciembre": 12
+}
+
+
+def parsear_fecha(texto: str) -> date:
+    """
+    Convierte una fecha en cualquier formato al tipo date.
+    Acepta: YYYY-MM-DD, nombres de días en español, 'mañana', 'pasado mañana',
+    'hoy', '5 de abril', '30 de marzo', etc.
+    """
+    texto = texto.strip().lower().lstrip("el").strip()
+    hoy = date.today()
+
+    # Formato estándar
+    try:
+        return date.fromisoformat(texto)
+    except ValueError:
+        pass
+
+    # Palabras clave
+    if texto in ("hoy",):
+        return hoy
+    if texto in ("mañana", "manana"):
+        return hoy + timedelta(days=1)
+    if texto in ("pasado mañana", "pasado manana"):
+        return hoy + timedelta(days=2)
+
+    # Nombre de día de la semana ("lunes", "el martes", etc.)
+    for nombre, num in DIAS_NOMBRE_A_NUM.items():
+        if nombre in texto:
+            dias_hasta = (num - hoy.weekday()) % 7
+            if dias_hasta == 0:
+                dias_hasta = 7  # Si es hoy el mismo día, va a la semana siguiente
+            return hoy + timedelta(days=dias_hasta)
+
+    # "5 de abril", "30 de marzo de 2026", etc.
+    import re
+    m = re.search(r"(\d{1,2})\s+de\s+(\w+)(?:\s+de\s+(\d{4}))?", texto)
+    if m:
+        dia = int(m.group(1))
+        mes_str = m.group(2)
+        anio = int(m.group(3)) if m.group(3) else hoy.year
+        mes = MESES_ES.get(mes_str)
+        if mes:
+            try:
+                return date(anio, mes, dia)
+            except ValueError:
+                pass
+
+    raise ValueError(f"No se pudo interpretar la fecha: '{texto}'")
+
 
 # ═══════════════════════════════════════════════════════════════
 # BASE DE DATOS
@@ -375,9 +433,9 @@ def consultar_disponibilidad(
     Si estilista_id es 'cualquiera', devuelve disponibilidad de todos los que hacen ese servicio.
     """
     try:
-        fecha_dt = date.fromisoformat(fecha)
+        fecha_dt = parsear_fecha(fecha)
     except ValueError:
-        raise HTTPException(400, "Formato de fecha inválido. Usa YYYY-MM-DD.")
+        raise HTTPException(400, f"No entendí la fecha '{fecha}'. Usa YYYY-MM-DD o un nombre de día como 'lunes'.")
 
     servicio = obtener_servicio(servicio_id)
     if not servicio:
