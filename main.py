@@ -272,6 +272,37 @@ def estilista_trabaja(estilista: dict, fecha: date) -> bool:
     return fecha.weekday() in estilista["dias_trabaja"]
 
 
+def hora_a_texto(hhmm: str) -> str:
+    """Convierte "14:45" → "las 3 menos cuarto de la tarde" para que Sofía suene natural."""
+    h, m = map(int, hhmm.split(":"))
+    # Franja horaria
+    if h < 13:
+        franja = "de la mañana"
+    elif h < 21:
+        franja = "de la tarde"
+    else:
+        franja = "de la noche"
+
+    # Hora en formato 12h aproximado
+    h12 = h if h <= 12 else h - 12
+    if h12 == 0:
+        h12 = 12
+
+    if m == 0:
+        base = f"las {h12}" if h12 != 1 else "la 1"
+    elif m == 15:
+        base = f"las {h12} y cuarto" if h12 != 1 else "la 1 y cuarto"
+    elif m == 30:
+        base = f"las {h12} y media" if h12 != 1 else "la 1 y media"
+    elif m == 45:
+        siguiente = h12 + 1 if h12 < 12 else 1
+        base = f"las {siguiente} menos cuarto" if siguiente != 1 else "la 1 menos cuarto"
+    else:
+        base = f"las {h12} y {m}" if h12 != 1 else f"la 1 y {m}"
+
+    return f"{base} {franja}"
+
+
 def estilista_hace_servicio(estilista: dict, servicio_id: str) -> bool:
     return servicio_id in estilista["especialidades"]
 
@@ -623,8 +654,8 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             resultado[est["nombre"]] = {
                 "estilista_id": est["id"],
                 "huecos_disponibles": huecos_muestra,
-                "total_huecos": len(pool),
-                "nota": "Hay más huecos disponibles. Estos son ejemplos representativos.",
+                "huecos_legibles": [hora_a_texto(h) for h in huecos_muestra],
+                "hay_mas_opciones": len(pool) > len(huecos_muestra),
             }
 
     conn.close()
