@@ -519,14 +519,21 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             huecos = [h for h in huecos if h >= hora_minima]
 
         if huecos:
-            # Seleccionar hasta 8 huecos representativos (4 mañana + 4 tarde)
-            manana = [h for h in huecos if h < "14:00"][:4]
-            tarde = [h for h in huecos if h >= "14:00"][:4]
-            huecos_muestra = manana + tarde
+            # Seleccionar 3 opciones representativas: 1 mañana, 1 mediodía/tarde, 1 última tarde
+            manana = [h for h in huecos if h < "13:00"]
+            tarde = [h for h in huecos if h >= "13:00"]
+            huecos_muestra = []
+            if manana:
+                huecos_muestra.append(manana[0])   # primer hueco mañana
+            if tarde:
+                huecos_muestra.append(tarde[0])    # primer hueco tarde
+            if tarde and len(tarde) > 1:
+                huecos_muestra.append(tarde[-1])   # último hueco tarde
             resultado[est["nombre"]] = {
                 "estilista_id": est["id"],
                 "huecos_disponibles": huecos_muestra,
                 "total_huecos": len(huecos),
+                "nota": "Hay más huecos disponibles. Estos son ejemplos representativos.",
             }
 
     conn.close()
