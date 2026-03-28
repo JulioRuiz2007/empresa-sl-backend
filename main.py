@@ -405,6 +405,17 @@ def startup():
     init_db()
 
 
+# --- STATUS ---
+
+@app.get("/status")
+def status():
+    return {
+        "backend": "ok",
+        "google_calendar": "conectado" if calendar_service.enabled else "no configurado (las citas se guardan solo en BD local)",
+        "calendar_id": os.getenv("GOOGLE_CALENDAR_ID", "no configurado"),
+    }
+
+
 # --- INFO ENDPOINTS ---
 
 @app.get("/servicios", summary="Listar todos los servicios disponibles")
@@ -441,11 +452,12 @@ class DisponibilidadRequest(BaseModel):
     fecha: str = Field(..., description="Fecha (YYYY-MM-DD o nombre de día en español/inglés)")
     servicio_id: str = Field(..., description="ID del servicio")
     estilista_id: str = Field(default="cualquiera", description="ID del estilista o 'cualquiera'")
+    horario_preferido: str = Field(default="cualquiera", description="'manana', 'tarde' o 'cualquiera'")
 
 
 @app.post("/disponibilidad", summary="Consultar huecos libres (POST)")
 def consultar_disponibilidad_post(req: DisponibilidadRequest):
-    return _consultar_disponibilidad(req.fecha, req.servicio_id, req.estilista_id)
+    return _consultar_disponibilidad(req.fecha, req.servicio_id, req.estilista_id, req.horario_preferido)
 
 
 @app.get("/disponibilidad", summary="Consultar huecos libres (GET legacy)")
@@ -453,11 +465,12 @@ def consultar_disponibilidad(
     fecha: str = Query(..., description="Fecha YYYY-MM-DD"),
     servicio_id: str = Query(..., description="ID del servicio"),
     estilista_id: str = Query(default="cualquiera", description="ID del estilista o 'cualquiera'"),
+    horario_preferido: str = Query(default="cualquiera", description="'manana', 'tarde' o 'cualquiera'"),
 ):
-    return _consultar_disponibilidad(fecha, servicio_id, estilista_id)
+    return _consultar_disponibilidad(fecha, servicio_id, estilista_id, horario_preferido)
 
 
-def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = "cualquiera"):
+def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = "cualquiera", horario_preferido: str = "cualquiera"):
     """
     Devuelve los huecos disponibles para un servicio en una fecha.
     Si estilista_id es 'cualquiera', devuelve disponibilidad de todos los que hacen ese servicio.
@@ -519,20 +532,32 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             huecos = [h for h in huecos if h >= hora_minima]
 
         if huecos:
-            # Seleccionar 3 opciones representativas: 1 mañana, 1 mediodía/tarde, 1 última tarde
             manana = [h for h in huecos if h < "13:00"]
             tarde = [h for h in huecos if h >= "13:00"]
+
+            # Filtrar según preferencia horaria del cliente
+            hp = horario_preferido.lower().replace("ñ", "n")
+            if hp in ("manana", "mañana", "morning"):
+                pool = manana if manana else huecos
+            elif hp in ("tarde", "afternoon", "evening"):
+                pool = tarde if tarde else huecos
+            else:
+                pool = huecos
+
+            # Seleccionar 3 opciones representativas del pool filtrado
             huecos_muestra = []
-            if manana:
-                huecos_muestra.append(manana[0])   # primer hueco mañana
-            if tarde:
-                huecos_muestra.append(tarde[0])    # primer hueco tarde
-            if tarde and len(tarde) > 1:
-                huecos_muestra.append(tarde[-1])   # último hueco tarde
+            if pool:
+                huecos_muestra.append(pool[0])
+            if len(pool) > 2:
+                huecos_muestra.append(pool[len(pool) // 2])
+            if len(pool) > 1:
+                huecos_muestra.append(pool[-1])
+            huecos_muestra = sorted(set(huecos_muestra))
+
             resultado[est["nombre"]] = {
                 "estilista_id": est["id"],
                 "huecos_disponibles": huecos_muestra,
-                "total_huecos": len(huecos),
+                "total_huecos": len(pool),
                 "nota": "Hay más huecos disponibles. Estos son ejemplos representativos.",
             }
 
