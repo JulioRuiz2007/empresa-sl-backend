@@ -801,8 +801,11 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         conn.close()
         raise HTTPException(400, f"{estilista['nombre']} no realiza '{servicio['nombre']}'. Sus servicios: {', '.join(servicios_est)}.")
 
-    # Comprobar conflictos con buffer
-    citas = obtener_citas_estilista(conn, estilista["id"], fecha_dt)
+    # Comprobar conflictos con buffer (BD + Google Calendar)
+    citas_bd = obtener_citas_estilista(conn, estilista["id"], fecha_dt)
+    bloques_gcal = gcal_bloques_estilista(estilista["id"], fecha_dt)
+    citas_gcal = [{"hora_inicio": b["hora_inicio"], "hora_fin": b["hora_fin"]} for b in bloques_gcal]
+    citas = citas_bd + citas_gcal
     buffer = SALON_CONFIG["buffer_minutos"]
 
     if hay_conflicto(citas, hora_inicio, hora_fin, buffer):
@@ -811,8 +814,8 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         conn.close()
         sugerencias = huecos[:4] if huecos else []
         if sugerencias:
-            opciones = ", ".join(f"las {h}" for h in sugerencias)
-            msg_voz = f"Uy, ese hueco de las {hora_norm} acaba de quedarse sin disponibilidad. Con {estilista['nombre']} ese día tengo hueco a {opciones}. ¿Te viene alguna?"
+            opciones = ", ".join(hora_a_texto(h) for h in sugerencias)
+            msg_voz = f"Uy, ese hueco de {hora_a_texto(hora_norm)} acaba de quedarse sin disponibilidad. Con {estilista['nombre']} ese día tengo hueco a {opciones}. ¿Te viene alguna?"
         else:
             msg_voz = f"Lo siento, ese día ya no tenemos más huecos disponibles con {estilista['nombre']}. ¿Probamos otro día?"
         return {
@@ -875,8 +878,8 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
             "precio_desde": servicio["precio"],
             "notas": req.notas,
         },
-        "mensaje": f"Cita confirmada: {servicio['nombre']} con {estilista['nombre']} el {fecha_legible} a las {hora_norm}.",
-        "mensaje_voz": f"¡Perfecto, {nombre_corto}! Ya te he reservado {servicio['nombre']} con {estilista['nombre']} para el {fecha_legible} a las {hora_norm}. Durará aproximadamente {servicio['duracion_min']} minutos y el precio es desde {servicio['precio']:.0f} euros. ¿Necesitas algo más?",
+        "mensaje": f"Cita confirmada: {servicio['nombre']} con {estilista['nombre']} el {fecha_legible} a {hora_a_texto(hora_norm)}.",
+        "mensaje_voz": f"¡Perfecto, {nombre_corto}! Ya te he reservado {servicio['nombre']} con {estilista['nombre']} para el {fecha_legible} a {hora_a_texto(hora_norm)}. Durará aproximadamente {servicio['duracion_min']} minutos y el precio es desde {servicio['precio']:.0f} euros. ¿Necesitas algo más?",
     }
 
 
@@ -1018,12 +1021,16 @@ def modificar_cita(cita_id: int, req: ModificarCitaRequest, background_tasks: Ba
             nueva_fecha_str, nueva_hora, hora_fin_str, nuevo_servicio_id,
         )
 
+    dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+    meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+    fecha_legible_mod = f"{dias_es[nueva_fecha_dt.weekday()]} {nueva_fecha_dt.day} de {meses_es[nueva_fecha_dt.month-1]}"
+    hora_legible_mod = hora_a_texto(nueva_hora)
     nombre_corto = cita["cliente_nombre"].split()[0]
     return {
         "exito": True,
         "cita_id": cita_id,
-        "mensaje": f"Cita modificada: {servicio['nombre']} con {estilista['nombre']} el {nueva_fecha_str} a las {nueva_hora}.",
-        "mensaje_voz": f"Listo, {nombre_corto}. He cambiado tu cita: {servicio['nombre']} con {estilista['nombre']} el {nueva_fecha_str} a las {nueva_hora}. ¿Necesitas algo más?",
+        "mensaje": f"Cita modificada: {servicio['nombre']} con {estilista['nombre']} el {fecha_legible_mod} a {hora_legible_mod}.",
+        "mensaje_voz": f"Listo, {nombre_corto}. He cambiado tu cita: {servicio['nombre']} con {estilista['nombre']} el {fecha_legible_mod} a {hora_legible_mod}. ¿Necesitas algo más?",
         "resumen": {
             "servicio": servicio["nombre"],
             "estilista": estilista["nombre"],
@@ -1065,12 +1072,17 @@ def cancelar_cita(cita_id: int, background_tasks: BackgroundTasks):
     if google_event_id:
         background_tasks.add_task(_bg_gcal_cancelar, google_event_id)
 
+    fecha_cancelada_dt = date.fromisoformat(cita["fecha"])
+    dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+    meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+    fecha_legible_can = f"{dias_es[fecha_cancelada_dt.weekday()]} {fecha_cancelada_dt.day} de {meses_es[fecha_cancelada_dt.month-1]}"
+    hora_legible_can = hora_a_texto(cita["hora_inicio"])
     nombre_corto = cita["cliente_nombre"].split()[0]
     return {
         "exito": True,
         "cita_id": cita_id,
-        "mensaje": f"Cita cancelada: {servicio['nombre']} con {estilista['nombre']} el {cita['fecha']} a las {cita['hora_inicio']}.",
-        "mensaje_voz": f"De acuerdo, {nombre_corto}. He cancelado tu cita de {servicio['nombre']} con {estilista['nombre']} del {cita['fecha']}. Si quieres volver a reservar, aquí estaré.",
+        "mensaje": f"Cita cancelada: {servicio['nombre']} con {estilista['nombre']} el {fecha_legible_can} a {hora_legible_can}.",
+        "mensaje_voz": f"De acuerdo, {nombre_corto}. He cancelado tu cita de {servicio['nombre']} con {estilista['nombre']} del {fecha_legible_can}. Si quieres volver a reservar, aquí estaré.",
     }
 
 
@@ -1092,9 +1104,9 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
         servicios_objs.append(s)
 
     try:
-        fecha_dt = date.fromisoformat(req.fecha)
+        fecha_dt = parsear_fecha(req.fecha)
     except ValueError:
-        raise HTTPException(400, "Formato de fecha inválido. Usa YYYY-MM-DD.")
+        raise HTTPException(400, f"No entendí la fecha '{req.fecha}'. Usa YYYY-MM-DD o un nombre de día como 'lunes'.")
 
     horario = salon_abierto(fecha_dt)
     if not horario:
@@ -1265,15 +1277,20 @@ def proximos_dias_disponibles(
                 huecos = [h for h in huecos if h >= hora_minima]
 
             if huecos:
+                # Filtrar a intervalos de 30 min para que Sofía no ofrezca demasiadas opciones
+                huecos_30 = [h for h in huecos if int(h.split(":")[1]) % 30 == 0]
+                huecos_muestra = huecos_30[:max_huecos_por_estilista] if huecos_30 else huecos[:max_huecos_por_estilista]
                 huecos_dia[est["nombre"]] = {
                     "estilista_id": est["id"],
                     "total_huecos": len(huecos),
-                    "proximos_huecos": huecos[:max_huecos_por_estilista],
+                    "proximos_huecos": huecos_muestra,
+                    "proximos_huecos_legibles": [hora_a_texto(h) for h in huecos_muestra],
                 }
 
         if huecos_dia:
             resultado.append({
                 "fecha": fecha.isoformat(),
+                "fecha_legible": f"{dia_nombre(fecha)} {fecha.day} de {['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][fecha.month-1]}",
                 "dia": dia_nombre(fecha),
                 "estilistas_disponibles": huecos_dia,
             })
