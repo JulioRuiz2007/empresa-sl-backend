@@ -308,8 +308,61 @@ def calcular_hora_fin(hora_inicio_str: str, duracion_min: int) -> str:
     return fin.strftime("%H:%M")
 
 
+def gcal_bloques_estilista(estilista_id: str, fecha: date) -> list:
+    """
+    Lee Google Calendar y devuelve los bloques ocupados para un estilista en una fecha.
+    Un evento bloquea a un estilista si:
+      - tiene su ID en extendedProperties (eventos creados por nuestro sistema), O
+      - su nombre aparece en el título del evento, O
+      - el evento no tiene estilista identificable (bloqueo de salón en general).
+    Eventos de OTRO estilista concreto se ignoran.
+    """
+    if not calendar_service.enabled:
+        return []
+
+    est = obtener_estilista(estilista_id)
+    if not est:
+        return []
+
+    eventos = calendar_service.obtener_eventos_dia(fecha.isoformat())
+    otros_nombres = [e["nombre"].lower() for e in ESTILISTAS if e["id"] != estilista_id]
+    bloques = []
+
+    for ev in eventos:
+        if "dateTime" not in ev.get("start", {}):
+            continue  # Evento de día completo, ignorar
+
+        try:
+            dt_start = datetime.fromisoformat(ev["start"]["dateTime"])
+            dt_end = datetime.fromisoformat(ev["end"]["dateTime"])
+        except (ValueError, KeyError):
+            continue
+
+        ext = ev.get("extendedProperties", {}).get("private", {})
+        ev_est_id = ext.get("estilista_id", "")
+        titulo = ev.get("summary", "").lower()
+
+        # Si el evento es explícitamente de otro estilista, ignorarlo
+        if ev_est_id and ev_est_id != estilista_id:
+            continue
+        # Si el título menciona a otro estilista (pero no al nuestro), ignorarlo
+        if not ev_est_id:
+            otro_en_titulo = any(n in titulo for n in otros_nombres)
+            nuestro_en_titulo = est["nombre"].lower() in titulo
+            if otro_en_titulo and not nuestro_en_titulo:
+                continue
+
+        bloques.append({
+            "hora_inicio": dt_start.strftime("%H:%M"),
+            "hora_fin": dt_end.strftime("%H:%M"),
+        })
+
+    return bloques
+
+
 def encontrar_huecos_libres(conn, estilista_id: str, fecha: date, duracion_min: int) -> list:
-    """Encuentra todos los huecos disponibles para un estilista en una fecha."""
+    """Encuentra todos los huecos disponibles para un estilista en una fecha.
+    Combina citas de la BD con eventos de Google Calendar."""
     horario = salon_abierto(fecha)
     if not horario:
         return []
@@ -322,16 +375,23 @@ def encontrar_huecos_libres(conn, estilista_id: str, fecha: date, duracion_min: 
     abre = datetime.strptime(horario["abre"], "%H:%M")
     cierra = datetime.strptime(horario["cierra"], "%H:%M")
 
-    citas = obtener_citas_estilista(conn, estilista_id, fecha)
-    huecos = []
+    # Combinar citas de BD + bloques de Google Calendar
+    citas_bd = obtener_citas_estilista(conn, estilista_id, fecha)
+    bloques_gcal = gcal_bloques_estilista(estilista_id, fecha)
+    # Normalizar bloques de Calendar al mismo formato que citas de BD
+    citas_gcal = [
+        {"hora_inicio": b["hora_inicio"], "hora_fin": b["hora_fin"]}
+        for b in bloques_gcal
+    ]
+    todas_las_citas = citas_bd + citas_gcal
 
-    # Generar slots cada 15 minutos
+    huecos = []
     slot = abre
     while slot + timedelta(minutes=duracion_min) <= cierra:
         hora_inicio = slot.time()
         hora_fin = (slot + timedelta(minutes=duracion_min)).time()
 
-        if not hay_conflicto(citas, hora_inicio, hora_fin, buffer):
+        if not hay_conflicto(todas_las_citas, hora_inicio, hora_fin, buffer):
             huecos.append(slot.strftime("%H:%M"))
 
         slot += timedelta(minutes=15)
@@ -340,7 +400,8 @@ def encontrar_huecos_libres(conn, estilista_id: str, fecha: date, duracion_min: 
 
 
 def buscar_mejor_estilista(conn, servicio_id: str, fecha: date, hora_str: str, duracion_min: int) -> Optional[dict]:
-    """Busca el estilista con mejor disponibilidad para un servicio/fecha/hora."""
+    """Busca el estilista con mejor disponibilidad para un servicio/fecha/hora.
+    Combina citas de la BD con eventos de Google Calendar."""
     buffer = SALON_CONFIG["buffer_minutos"]
     hora_inicio = datetime.strptime(hora_str, "%H:%M").time()
     hora_fin_str = calcular_hora_fin(hora_str, duracion_min)
@@ -352,8 +413,12 @@ def buscar_mejor_estilista(conn, servicio_id: str, fecha: date, hora_str: str, d
         if not estilista_trabaja(estilista, fecha):
             continue
 
-        citas = obtener_citas_estilista(conn, estilista["id"], fecha)
-        if not hay_conflicto(citas, hora_inicio, hora_fin, buffer):
+        citas_bd = obtener_citas_estilista(conn, estilista["id"], fecha)
+        bloques_gcal = gcal_bloques_estilista(estilista["id"], fecha)
+        citas_gcal = [{"hora_inicio": b["hora_inicio"], "hora_fin": b["hora_fin"]} for b in bloques_gcal]
+        todas = citas_bd + citas_gcal
+
+        if not hay_conflicto(todas, hora_inicio, hora_fin, buffer):
             return estilista
 
     return None
@@ -364,11 +429,12 @@ def buscar_mejor_estilista(conn, servicio_id: str, fecha: date, hora_str: str, d
 # ═══════════════════════════════════════════════════════════════
 
 def _bg_gcal_crear(cita_id: int, titulo: str, fecha: str, hora_inicio: str,
-                   hora_fin: str, descripcion: str, servicio_id: str, telefono: str):
+                   hora_fin: str, descripcion: str, servicio_id: str, telefono: str,
+                   estilista_id: str = ""):
     google_event_id = calendar_service.crear_evento(
         titulo=titulo, fecha=fecha, hora_inicio=hora_inicio, hora_fin=hora_fin,
         descripcion=descripcion, servicio_id=servicio_id,
-        cliente_telefono=telefono, cita_id=cita_id,
+        cliente_telefono=telefono, cita_id=cita_id, estilista_id=estilista_id,
     )
     if google_event_id:
         conn = get_db()
@@ -737,6 +803,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         _bg_gcal_crear, cita_id,
         f"{servicio['nombre']} — {req.cliente_nombre} (con {estilista['nombre']})",
         fecha_dt.isoformat(), hora_norm, hora_fin_str, req.notas, req.servicio_id, req.cliente_telefono,
+        estilista["id"],
     )
 
     dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
@@ -1060,6 +1127,7 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
                 _bg_gcal_crear, cita_id,
                 f"{servicio['nombre']} — {req.cliente_nombre} (con {estilista['nombre']})",
                 req.fecha, hora_actual, hora_fin_str, req.notas, sid, req.cliente_telefono,
+                estilista["id"],
             )
 
             # El siguiente servicio empieza cuando termina éste + buffer

@@ -105,6 +105,7 @@ class GoogleCalendarService:
         servicio_id: str = "",
         cliente_telefono: str = "",
         cita_id: int = None,
+        estilista_id: str = "",
     ) -> Optional[str]:
         """
         Crea un evento en Google Calendar.
@@ -141,6 +142,7 @@ class GoogleCalendarService:
                     "empresa_sl_cita_id": str(cita_id) if cita_id else "",
                     "servicio_id": servicio_id,
                     "cliente_telefono": cliente_telefono,
+                    "estilista_id": estilista_id,
                 }
             },
         }
