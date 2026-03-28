@@ -12,7 +12,9 @@ Endpoints principales:
   - GET  /estilistas           → listar estilistas y horarios
 """
 
-from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, HTTPException, Query, BackgroundTasks, Request
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime, date, time, timedelta
@@ -272,53 +274,48 @@ def estilista_trabaja(estilista: dict, fecha: date) -> bool:
     return fecha.weekday() in estilista["dias_trabaja"]
 
 
+MINUTOS_ES = {
+    5: "cinco", 10: "diez", 15: "cuarto", 20: "veinte", 25: "veinticinco",
+    30: "media", 35: "veinticinco", 40: "veinte", 45: "cuarto", 50: "diez", 55: "cinco",
+}
+
+
 def hora_a_texto(hhmm: str) -> str:
-    """Convierte "14:45" → "las 3 menos cuarto de la tarde" para que Sofía suene natural."""
+    """Convierte "14:45" → "las 3 menos cuarto de la tarde" para que Sofía suene natural.
+    Para minutos ≤30 usa "y X", para minutos >30 usa "menos X" de la hora siguiente.
+    """
     h, m = map(int, hhmm.split(":"))
 
-    # Franja horaria
-    if h < 12:
-        franja = "de la mañana"
-    elif h < 14:
-        franja = "del mediodía"
-    elif h < 21:
-        franja = "de la tarde"
-    else:
-        franja = "de la noche"
-
-    # Para los :45, la hora "siguiente" en 12h
-    if m == 45:
-        h_sig = h + 1
-        h12_sig = h_sig if h_sig <= 12 else h_sig - 12
-        if h12_sig == 0:
-            h12_sig = 12
-        # Ajustar franja para "menos cuarto" (la franja es la de la hora siguiente)
-        if h_sig < 12:
-            franja = "de la mañana"
-        elif h_sig < 14:
-            franja = "del mediodía"
-        elif h_sig < 21:
-            franja = "de la tarde"
+    def _franja(hora_24):
+        if hora_24 < 12:
+            return "de la mañana"
+        elif hora_24 < 14:
+            return "del mediodía"
+        elif hora_24 < 21:
+            return "de la tarde"
         else:
-            franja = "de la noche"
-        base = f"las {h12_sig} menos cuarto" if h12_sig != 1 else "la 1 menos cuarto"
-        return f"{base} {franja}"
+            return "de la noche"
 
-    # Hora en formato 12h
-    h12 = h if h <= 12 else h - 12
-    if h12 == 0:
-        h12 = 12
+    def _h12(hora_24):
+        h12 = hora_24 if hora_24 <= 12 else hora_24 - 12
+        return 12 if h12 == 0 else h12
+
+    def _base(h12, prefijo):
+        return f"la 1 {prefijo}" if h12 == 1 else f"las {h12} {prefijo}"
 
     if m == 0:
-        base = f"las {h12}" if h12 != 1 else "la 1"
-    elif m == 15:
-        base = f"las {h12} y cuarto" if h12 != 1 else "la 1 y cuarto"
-    elif m == 30:
-        base = f"las {h12} y media" if h12 != 1 else "la 1 y media"
-    else:
-        base = f"las {h12} y {m}" if h12 != 1 else f"la 1 y {m}"
+        return f"{_base(_h12(h), '').rstrip()} {_franja(h)}"
 
-    return f"{base} {franja}"
+    if m <= 30:
+        texto_min = MINUTOS_ES.get(m, str(m))
+        prefijo = f"y {texto_min}"
+        return f"{_base(_h12(h), prefijo)} {_franja(h)}"
+
+    # m > 30: usar "menos X" con la hora siguiente
+    h_sig = h + 1
+    texto_min = MINUTOS_ES.get(60 - m, str(60 - m))
+    prefijo = f"menos {texto_min}"
+    return f"{_base(_h12(h_sig), prefijo)} {_franja(h_sig)}"
 
 
 def estilista_hace_servicio(estilista: dict, servicio_id: str) -> bool:
@@ -518,6 +515,34 @@ app = FastAPI(
 @app.on_event("startup")
 def startup():
     init_db()
+
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Devuelve siempre mensaje_voz para que Retell pueda hablar aunque haya un error."""
+    msg = str(exc.detail)
+    if exc.status_code == 404:
+        voz = f"Lo siento, no encontré lo que buscabas. {msg}"
+    elif exc.status_code == 409:
+        voz = f"{msg}"
+    elif exc.status_code == 400:
+        voz = f"Hay un problema con los datos: {msg}"
+    else:
+        voz = "Ha ocurrido un error inesperado. Por favor, inténtalo de nuevo."
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": True, "detalle": msg, "mensaje_voz": voz},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    campos = [e["loc"][-1] for e in exc.errors() if e.get("loc")]
+    voz = f"Faltan algunos datos para continuar: {', '.join(str(c) for c in campos)}. ¿Puedes repetirlos?"
+    return JSONResponse(
+        status_code=422,
+        content={"error": True, "detalle": str(exc.errors()), "mensaje_voz": voz},
+    )
 
 
 # --- STATUS ---
@@ -931,7 +956,35 @@ def buscar_citas(
             "notas": r["notas"],
         })
 
-    return {"total": len(citas), "citas": citas}
+    if not citas:
+        busqueda = f"el teléfono {telefono}" if telefono else f"el nombre {nombre}"
+        return {
+            "total": 0,
+            "citas": [],
+            "mensaje_voz": f"No he encontrado ninguna cita con {busqueda}. ¿Quieres que te ayude a hacer una nueva reserva?",
+        }
+
+    # Construir mensaje_voz con las citas encontradas (máx 3 para no saturar)
+    dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+    meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+    proximas = [c for c in citas if c["fecha"] >= date.today().isoformat()][:3]
+    if proximas:
+        if len(proximas) == 1:
+            c = proximas[0]
+            f = date.fromisoformat(c["fecha"])
+            fecha_leg = f"{dias_es[f.weekday()]} {f.day} de {meses_es[f.month-1]}"
+            msg = f"Tienes una cita de {c['servicio']} con {c['estilista']} el {fecha_leg} a {hora_a_texto(c['hora_inicio'])}."
+        else:
+            partes = []
+            for c in proximas:
+                f = date.fromisoformat(c["fecha"])
+                fecha_leg = f"{dias_es[f.weekday()]} {f.day} de {meses_es[f.month-1]}"
+                partes.append(f"{c['servicio']} con {c['estilista']} el {fecha_leg} a {hora_a_texto(c['hora_inicio'])}")
+            msg = "Tienes estas citas próximas: " + "; ".join(partes) + "."
+    else:
+        msg = "No tienes citas próximas. ¿Quieres reservar una?"
+
+    return {"total": len(citas), "citas": citas, "mensaje_voz": msg}
 
 
 # --- MODIFICAR CITA ---
@@ -1342,6 +1395,77 @@ def modificar_cita_post(req: ModificarConIdRequest, background_tasks: Background
 def cancelar_cita_post(req: CancelarConIdRequest, background_tasks: BackgroundTasks):
     """Ruta alternativa POST para Retell AI que no soporta DELETE."""
     return cancelar_cita(req.cita_id, background_tasks)
+
+
+# --- SIGUIENTE HUECO DISPONIBLE ---
+
+@app.get("/disponibilidad/siguiente-hueco", summary="Primer hueco disponible para un servicio")
+def siguiente_hueco_disponible(
+    servicio_id: str = Query(..., description="ID del servicio"),
+    estilista_id: str = Query(default="cualquiera", description="ID del estilista o 'cualquiera'"),
+    dias_max: int = Query(default=14, ge=1, le=30, description="Días máximos a buscar hacia adelante"),
+):
+    """
+    Devuelve el primer hueco libre disponible para un servicio.
+    Ideal para cuando el cliente pregunta: '¿cuándo antes me podéis atender?'
+    """
+    servicio = obtener_servicio(servicio_id)
+    if not servicio:
+        raise HTTPException(404, f"Servicio '{servicio_id}' no encontrado.")
+
+    if estilista_id == "cualquiera":
+        estilistas_base = [e for e in ESTILISTAS if estilista_hace_servicio(e, servicio_id)]
+    else:
+        est = obtener_estilista(estilista_id)
+        if not est:
+            raise HTTPException(404, f"Estilista '{estilista_id}' no encontrado.")
+        estilistas_base = [est] if estilista_hace_servicio(est, servicio_id) else []
+
+    if not estilistas_base:
+        raise HTTPException(404, f"No hay estilistas que realicen '{servicio['nombre']}'.")
+
+    conn = get_db()
+    ahora = datetime.now()
+    hoy = ahora.date()
+    dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+    meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+
+    for i in range(dias_max):
+        fecha = hoy + timedelta(days=i)
+        if not salon_abierto(fecha):
+            continue
+
+        for est in estilistas_base:
+            if not estilista_trabaja(est, fecha):
+                continue
+
+            huecos = encontrar_huecos_libres(conn, est["id"], fecha, servicio["duracion_min"])
+
+            if fecha == hoy:
+                hora_minima = (ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])).strftime("%H:%M")
+                huecos = [h for h in huecos if h >= hora_minima]
+
+            if huecos:
+                conn.close()
+                primer_hueco = huecos[0]
+                fecha_legible = f"{dias_es[fecha.weekday()]} {fecha.day} de {meses_es[fecha.month-1]}"
+                return {
+                    "disponible": True,
+                    "fecha": fecha.isoformat(),
+                    "fecha_legible": fecha_legible,
+                    "hora": primer_hueco,
+                    "hora_legible": hora_a_texto(primer_hueco),
+                    "estilista": est["nombre"],
+                    "estilista_id": est["id"],
+                    "servicio": servicio["nombre"],
+                    "mensaje_voz": f"El primer hueco que tengo para {servicio['nombre']} es el {fecha_legible} a {hora_a_texto(primer_hueco)} con {est['nombre']}. ¿Te viene bien?",
+                }
+
+    conn.close()
+    return {
+        "disponible": False,
+        "mensaje_voz": f"Ahora mismo no tenemos huecos para {servicio['nombre']} en los próximos {dias_max} días. ¿Quieres que te llame cuando haya disponibilidad?",
+    }
 
 
 # ═══════════════════════════════════════════════════════════════
