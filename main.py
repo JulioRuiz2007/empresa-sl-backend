@@ -563,22 +563,28 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         raise HTTPException(404, f"Servicio '{req.servicio_id}' no encontrado.")
 
     try:
-        fecha_dt = date.fromisoformat(req.fecha)
+        fecha_dt = parsear_fecha(req.fecha)
     except ValueError:
-        raise HTTPException(400, "Formato de fecha inválido.")
+        raise HTTPException(400, f"No entendí la fecha '{req.fecha}'.")
 
     # Validar que el salón está abierto
     horario = salon_abierto(fecha_dt)
     if not horario:
         raise HTTPException(400, f"El salón está cerrado los {dia_nombre(fecha_dt)}s.")
 
-    # Validar hora dentro de horario
-    try:
-        hora_inicio = datetime.strptime(req.hora, "%H:%M").time()
-    except ValueError:
-        raise HTTPException(400, "Formato de hora inválido. Usa HH:MM.")
+    # Normalizar hora: "9" → "09:00", "9:00" → "09:00"
+    hora_norm = req.hora.strip()
+    if ":" not in hora_norm:
+        hora_norm = hora_norm.zfill(2) + ":00"
+    elif len(hora_norm.split(":")[0]) == 1:
+        hora_norm = "0" + hora_norm
 
-    hora_fin_str = calcular_hora_fin(req.hora, servicio["duracion_min"])
+    try:
+        hora_inicio = datetime.strptime(hora_norm, "%H:%M").time()
+    except ValueError:
+        raise HTTPException(400, f"Formato de hora inválido: '{req.hora}'.")
+
+    hora_fin_str = calcular_hora_fin(hora_norm, servicio["duracion_min"])
     hora_fin = datetime.strptime(hora_fin_str, "%H:%M").time()
 
     hora_abre = datetime.strptime(horario["abre"], "%H:%M").time()
@@ -598,7 +604,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
 
     # Resolver estilista
     if req.estilista_id == "cualquiera":
-        estilista = buscar_mejor_estilista(conn, req.servicio_id, fecha_dt, req.hora, servicio["duracion_min"])
+        estilista = buscar_mejor_estilista(conn, req.servicio_id, fecha_dt, hora_norm, servicio["duracion_min"])
         if not estilista:
             conn.close()
             raise HTTPException(409, "No hay estilistas disponibles para ese servicio, fecha y hora.")
