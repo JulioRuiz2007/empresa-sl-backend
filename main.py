@@ -275,15 +275,36 @@ def estilista_trabaja(estilista: dict, fecha: date) -> bool:
 def hora_a_texto(hhmm: str) -> str:
     """Convierte "14:45" → "las 3 menos cuarto de la tarde" para que Sofía suene natural."""
     h, m = map(int, hhmm.split(":"))
+
     # Franja horaria
-    if h < 13:
+    if h < 12:
         franja = "de la mañana"
+    elif h < 14:
+        franja = "del mediodía"
     elif h < 21:
         franja = "de la tarde"
     else:
         franja = "de la noche"
 
-    # Hora en formato 12h aproximado
+    # Para los :45, la hora "siguiente" en 12h
+    if m == 45:
+        h_sig = h + 1
+        h12_sig = h_sig if h_sig <= 12 else h_sig - 12
+        if h12_sig == 0:
+            h12_sig = 12
+        # Ajustar franja para "menos cuarto" (la franja es la de la hora siguiente)
+        if h_sig < 12:
+            franja = "de la mañana"
+        elif h_sig < 14:
+            franja = "del mediodía"
+        elif h_sig < 21:
+            franja = "de la tarde"
+        else:
+            franja = "de la noche"
+        base = f"las {h12_sig} menos cuarto" if h12_sig != 1 else "la 1 menos cuarto"
+        return f"{base} {franja}"
+
+    # Hora en formato 12h
     h12 = h if h <= 12 else h - 12
     if h12 == 0:
         h12 = 12
@@ -294,9 +315,6 @@ def hora_a_texto(hhmm: str) -> str:
         base = f"las {h12} y cuarto" if h12 != 1 else "la 1 y cuarto"
     elif m == 30:
         base = f"las {h12} y media" if h12 != 1 else "la 1 y media"
-    elif m == 45:
-        siguiente = h12 + 1 if h12 < 12 else 1
-        base = f"las {siguiente} menos cuarto" if siguiente != 1 else "la 1 menos cuarto"
     else:
         base = f"las {h12} y {m}" if h12 != 1 else f"la 1 y {m}"
 
