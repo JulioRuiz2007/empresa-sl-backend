@@ -1209,22 +1209,26 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
     hora_fin_total = citas_creadas[-1]["hora_fin"]
     nombres_servicios = " y ".join(c["servicio"] for c in citas_creadas)
     nombre_corto = req.cliente_nombre.split()[0]
+    dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+    meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+    fecha_legible_combo = f"{dias_es[fecha_dt.weekday()]} {fecha_dt.day} de {meses_es[fecha_dt.month-1]}"
 
     return {
         "exito": True,
         "citas": citas_creadas,
         "resumen": {
             "cliente": req.cliente_nombre,
-            "fecha": req.fecha,
+            "fecha": fecha_dt.isoformat(),
+            "fecha_legible": fecha_legible_combo,
             "hora_inicio": req.hora,
             "hora_fin": hora_fin_total,
             "precio_total_desde": total_precio,
             "num_servicios": len(citas_creadas),
         },
-        "mensaje": f"Combo confirmado: {nombres_servicios} el {req.fecha} de {req.hora} a {hora_fin_total}.",
+        "mensaje": f"Combo confirmado: {nombres_servicios} el {fecha_legible_combo} de {hora_a_texto(req.hora)} a {hora_a_texto(hora_fin_total)}.",
         "mensaje_voz": (
-            f"¡Perfecto, {nombre_corto}! He reservado {nombres_servicios} para el {req.fecha}. "
-            f"Empezamos a las {req.hora} y terminamos sobre las {hora_fin_total}. "
+            f"¡Perfecto, {nombre_corto}! He reservado {nombres_servicios} para el {fecha_legible_combo}. "
+            f"Empezamos a {hora_a_texto(req.hora)} y terminamos sobre {hora_a_texto(hora_fin_total)}. "
             f"El precio total es desde {total_precio:.0f} euros. ¿Necesitas algo más?"
         ),
     }
