@@ -111,9 +111,17 @@ def parsear_fecha(texto: str) -> date:
     texto = _re.sub(r"\b(que viene|próximo|proximo|este|esta|next|this|coming)\b", "", texto).strip()
     hoy = date.today()
 
-    # Formato estándar
+    # Formato estándar YYYY-MM-DD
     try:
-        return date.fromisoformat(texto)
+        resultado = date.fromisoformat(texto)
+        # Si la fecha es en el pasado (el LLM la calculó con su año de entrenamiento),
+        # corregirla al próximo día de esa semana
+        if resultado < hoy:
+            dias_hasta = (resultado.weekday() - hoy.weekday()) % 7
+            if dias_hasta == 0:
+                dias_hasta = 7
+            return hoy + timedelta(days=dias_hasta)
+        return resultado
     except ValueError:
         pass
 
