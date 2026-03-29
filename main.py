@@ -422,10 +422,36 @@ def estilista_trabaja(estilista: dict, fecha: date) -> bool:
     return fecha.weekday() in estilista["dias_trabaja"]
 
 
+import re as _re_hora
+
 MINUTOS_ES = {
     5: "cinco", 10: "diez", 15: "cuarto", 20: "veinte", 25: "veinticinco",
     30: "media", 35: "veinticinco", 40: "veinte", 45: "cuarto", 50: "diez", 55: "cinco",
 }
+
+
+def normalizar_hora(hora_raw: str) -> str:
+    """Normaliza expresiones de hora a 'HH:MM'.
+    Acepta: '10', '10:00', '9:30', '2 de la tarde', '14:00', 'pm', etc.
+    Lanza ValueError si no puede parsear.
+    """
+    hora_s = hora_raw.strip().lower()
+    es_tarde = bool(_re_hora.search(r"(tarde|pm)", hora_s))
+    hora_s = _re_hora.sub(r"\s*(de\s+la\s+tarde|de\s+la\s+mañana|de\s+la\s+manana|pm|am)\s*", "", hora_s).strip()
+    m = _re_hora.match(r"^(\d{1,2})(?:[:\s](\d{2}))?", hora_s)
+    if m:
+        h = int(m.group(1))
+        mins = m.group(2) or "00"
+        if es_tarde and h < 12:
+            h += 12
+        return f"{h:02d}:{mins}"
+    if ":" not in hora_s:
+        hora_s = hora_s.zfill(2) + ":00"
+    elif len(hora_s.split(":")[0]) == 1:
+        hora_s = "0" + hora_s
+    # Validar formato final
+    datetime.strptime(hora_s, "%H:%M")
+    return hora_s
 
 
 def hora_a_texto(hhmm: str) -> str:
@@ -762,11 +788,12 @@ class DisponibilidadRequest(BaseModel):
     servicio_id: str = Field(..., description="ID del servicio")
     estilista_id: str = Field(default="cualquiera", description="ID del estilista o 'cualquiera'")
     horario_preferido: str = Field(default="cualquiera", description="'manana', 'tarde' o 'cualquiera'")
+    hora_preferida: str = Field(default="", description="Hora exacta solicitada por el cliente, ej: '10:00'. Si se indica, el mensaje_voz aclarará si esa hora no está disponible.")
 
 
 @app.post("/disponibilidad", summary="Consultar huecos libres (POST)")
 def consultar_disponibilidad_post(req: DisponibilidadRequest):
-    return _consultar_disponibilidad(req.fecha, req.servicio_id, req.estilista_id, req.horario_preferido)
+    return _consultar_disponibilidad(req.fecha, req.servicio_id, req.estilista_id, req.horario_preferido, req.hora_preferida)
 
 
 @app.get("/disponibilidad", summary="Consultar huecos libres (GET legacy)")
@@ -775,11 +802,12 @@ def consultar_disponibilidad(
     servicio_id: str = Query(..., description="ID del servicio"),
     estilista_id: str = Query(default="cualquiera", description="ID del estilista o 'cualquiera'"),
     horario_preferido: str = Query(default="cualquiera", description="'manana', 'tarde' o 'cualquiera'"),
+    hora_preferida: str = Query(default="", description="Hora exacta solicitada, ej: '10:00'"),
 ):
-    return _consultar_disponibilidad(fecha, servicio_id, estilista_id, horario_preferido)
+    return _consultar_disponibilidad(fecha, servicio_id, estilista_id, horario_preferido, hora_preferida)
 
 
-def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = "cualquiera", horario_preferido: str = "cualquiera"):
+def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = "cualquiera", horario_preferido: str = "cualquiera", hora_preferida: str = ""):
     """
     Devuelve los huecos disponibles para un servicio en una fecha.
     Si estilista_id es 'cualquiera', devuelve disponibilidad de todos los que hacen ese servicio.
@@ -874,17 +902,54 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
     conn.close()
 
     if not resultado:
+        # Normalizar hora_preferida para el mensaje de no disponibilidad
+        hora_pref_norm_nd = ""
+        if hora_preferida:
+            try:
+                hora_pref_norm_nd = normalizar_hora(hora_preferida)
+            except Exception:
+                hora_pref_norm_nd = ""
+
+        dias_es_nd = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+        meses_es_nd = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+        fecha_legible_nd = f"{dias_es_nd[fecha_dt.weekday()]} {fecha_dt.day} de {meses_es_nd[fecha_dt.month-1]}"
+
+        if hora_pref_norm_nd:
+            hora_legible_nd = hora_a_texto(hora_pref_norm_nd)
+            msg_nd = (
+                f"Lo siento, {hora_legible_nd} el {fecha_legible_nd} no tenemos disponibilidad para {servicio['nombre']}. "
+                f"¿Quieres que busque ese mismo servicio otro día de la semana, o te doy las primeras opciones disponibles?"
+            )
+        else:
+            msg_nd = f"Lo siento, no tenemos disponibilidad para {servicio['nombre']} el {fecha_legible_nd}. ¿Probamos otro día?"
+
         return {
             "disponible": False,
             "mensaje": f"No hay disponibilidad para '{servicio['nombre']}' el {fecha}.",
-            "sugerencia": "Prueba otro día o consulta disponibilidad para los próximos días.",
+            "sugerencia": "Prueba otro día o consulta /disponibilidad/proximos-dias.",
             "huecos": {},
-            "mensaje_voz": f"Lo siento, no tenemos disponibilidad para {servicio['nombre']} ese día. ¿Probamos otro día?",
+            "mensaje_voz": msg_nd,
         }
 
     dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
     meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
     fecha_legible = f"{dias_es[fecha_dt.weekday()]} {fecha_dt.day} de {meses_es[fecha_dt.month-1]}"
+
+    # Normalizar hora_preferida a "HH:MM" para comparar
+    hora_pref_norm = ""
+    if hora_preferida:
+        try:
+            hora_pref_norm = normalizar_hora(hora_preferida)
+        except Exception:
+            hora_pref_norm = ""
+
+    # ¿La hora pedida exacta está disponible para algún estilista?
+    hora_exacta_disponible = False
+    if hora_pref_norm:
+        for datos in resultado.values():
+            if hora_pref_norm in datos["huecos_disponibles"]:
+                hora_exacta_disponible = True
+                break
 
     # Generar mensaje_voz natural
     partes_voz = []
@@ -897,7 +962,16 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
         else:
             partes_voz.append(f"con {nombre_est} a {', '.join(legibles[:-1])} o {legibles[-1]}")
 
-    if len(partes_voz) == 1:
+    if hora_pref_norm and not hora_exacta_disponible:
+        # Hora concreta pedida pero no disponible → mensaje jerárquico
+        hora_pref_legible = hora_a_texto(hora_pref_norm)
+        alternativas_str = "; ".join(partes_voz)
+        msg_voz = (
+            f"Lo siento, {hora_pref_legible} el {fecha_legible} no está disponible para {servicio['nombre']}. "
+            f"Ese mismo día tengo: {alternativas_str}. "
+            f"¿Te viene bien alguna de estas opciones, o prefieres otro día?"
+        )
+    elif len(partes_voz) == 1:
         msg_voz = f"Para {servicio['nombre']} el {fecha_legible} tengo {partes_voz[0]}. ¿Te viene bien?"
     else:
         msg_voz = f"Para {servicio['nombre']} el {fecha_legible} tengo: {'; '.join(partes_voz)}. ¿Con quién y a qué hora te viene mejor?"
@@ -937,28 +1011,10 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         raise HTTPException(400, f"El salón está cerrado los {dia_en_plural(fecha_dt)}.")
 
     # Normalizar hora: "9" → "09:00", "9:00" → "09:00", "2 de la tarde" → "14:00"
-    import re as _re_hora
-    hora_norm = req.hora.strip().lower()
-    # Detectar "de la tarde" / "pm" → convertir a 24h
-    es_tarde = bool(_re_hora.search(r"(tarde|pm)", hora_norm))
-    hora_norm = _re_hora.sub(r"\s*(de\s+la\s+tarde|de\s+la\s+mañana|de\s+la\s+manana|pm|am)\s*", "", hora_norm).strip()
-    # Extraer solo dígitos y ":"
-    m_hora = _re_hora.match(r"^(\d{1,2})(?:[:\s](\d{2}))?", hora_norm)
-    if m_hora:
-        h = int(m_hora.group(1))
-        mins = m_hora.group(2) or "00"
-        if es_tarde and h < 12:
-            h += 12
-        hora_norm = f"{h:02d}:{mins}"
-    else:
-        if ":" not in hora_norm:
-            hora_norm = hora_norm.zfill(2) + ":00"
-        elif len(hora_norm.split(":")[0]) == 1:
-            hora_norm = "0" + hora_norm
-
     try:
+        hora_norm = normalizar_hora(req.hora)
         hora_inicio = datetime.strptime(hora_norm, "%H:%M").time()
-    except ValueError:
+    except (ValueError, AttributeError):
         raise HTTPException(400, f"Formato de hora inválido: '{req.hora}'.")
 
     hora_fin_str = calcular_hora_fin(hora_norm, servicio["duracion_min"])
