@@ -1668,6 +1668,17 @@ def proximos_dias_disponibles(
     }
 
 
+class ProximosDiasRequest(BaseModel):
+    servicio_id: str = Field(..., description="ID del servicio")
+    estilista_id: str = Field(default="cualquiera")
+    dias: int = Field(default=7, ge=1, le=14)
+
+
+@app.post("/disponibilidad/proximos-dias", summary="Buscar disponibilidad en los próximos N días (POST)")
+def proximos_dias_disponibles_post(req: ProximosDiasRequest):
+    return proximos_dias_disponibles(req.servicio_id, req.estilista_id, req.dias)
+
+
 # ═══════════════════════════════════════════════════════════════
 # RUTAS ALTERNATIVAS PARA RETELL AI (solo acepta GET y POST)
 # ═══════════════════════════════════════════════════════════════
