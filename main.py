@@ -339,22 +339,29 @@ SERVICIO_ALIAS = {
     # corte
     "corte": "corte", "corte de pelo": "corte", "corte de cabello": "corte",
     "pelo": "corte", "haircut": "corte", "cut": "corte",
+    "un corte": "corte", "cortarme el pelo": "corte", "cortarme": "corte",
+    "quiero cortarme": "corte", "necesito un corte": "corte",
     # coloracion
     "coloracion": "coloracion", "coloración": "coloracion", "color": "coloracion",
     "mechas": "coloracion", "tinte": "coloracion", "tinte de pelo": "coloracion",
     "highlights": "coloracion", "balayage": "coloracion",
+    "tenirme": "coloracion", "tintura": "coloracion", "quiero tenirme": "coloracion",
+    "quiero tenerme": "coloracion", "reflejos": "coloracion",
     # brushing
     "brushing": "brushing", "secado": "brushing", "blow dry": "brushing",
     "secado con forma": "brushing", "peinado": "brushing",
     # unas
-    "unas": "unas", "uñas": "unas", "manicura": "unas", "pedicura": "unas",
-    "nails": "unas", "manicure": "unas",
+    "unas": "unas", "unas": "unas", "manicura": "unas", "pedicura": "unas",
+    "nails": "unas", "manicure": "unas", "arreglarme las unas": "unas",
+    "pintarme las unas": "unas",
     # facial
     "facial": "facial", "limpieza facial": "facial", "tratamiento facial": "facial",
-    "limpieza": "facial",
+    "limpieza": "facial", "hidratacion facial": "facial", "hidratacion": "facial",
+    "tratamiento de piel": "facial", "peeling": "facial",
     # depilacion
     "depilacion": "depilacion", "depilación": "depilacion", "waxing": "depilacion",
-    "cera": "depilacion",
+    "cera": "depilacion", "depilacion de cejas": "depilacion", "cejas": "depilacion",
+    "depilarme": "depilacion",
 }
 
 
@@ -368,12 +375,18 @@ def obtener_servicio(servicio_id: str) -> dict:
     for s in SERVICIOS:
         if s["id"] == sid:
             return s
-    # Alias match
+    # Alias match (exact and partial)
     alias_id = SERVICIO_ALIAS.get(sid)
     if alias_id:
         for s in SERVICIOS:
             if s["id"] == alias_id:
                 return s
+    # Try each alias key as substring of the input
+    for alias_key, alias_val in SERVICIO_ALIAS.items():
+        if alias_key in sid or sid in alias_key:
+            for s in SERVICIOS:
+                if s["id"] == alias_val:
+                    return s
     # Partial match against ID or name
     for s in SERVICIOS:
         if sid in norm(s["id"]) or sid in norm(s["nombre"]) or norm(s["nombre"]) in sid:
