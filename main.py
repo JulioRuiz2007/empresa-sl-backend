@@ -1126,15 +1126,19 @@ def buscar_citas(
     for r in rows:
         servicio = obtener_servicio(r["servicio_id"])
         estilista = obtener_estilista(r["estilista_id"])
+        # Normalizar fecha y hora a strings (PG devuelve objetos date/time)
+        fecha_str = r["fecha"].isoformat() if hasattr(r["fecha"], "isoformat") else str(r["fecha"])
+        hora_ini_str = str(r["hora_inicio"])[:5]
+        hora_fin_str = str(r["hora_fin"])[:5]
         citas.append({
             "cita_id": r["id"],
             "cliente": r["cliente_nombre"],
             "telefono": r["cliente_telefono"],
             "servicio": servicio["nombre"] if servicio else r["servicio_id"],
             "estilista": estilista["nombre"] if estilista else r["estilista_id"],
-            "fecha": r["fecha"],
-            "hora_inicio": r["hora_inicio"],
-            "hora_fin": r["hora_fin"],
+            "fecha": fecha_str,
+            "hora_inicio": hora_ini_str,
+            "hora_fin": hora_fin_str,
             "duracion_min": r["duracion_min"],
             "precio_estimado": r["precio_estimado"],
             "estado": r["estado"],
@@ -1306,11 +1310,13 @@ def cancelar_cita(cita_id: int, background_tasks: BackgroundTasks):
     if google_event_id:
         background_tasks.add_task(_bg_gcal_cancelar, google_event_id)
 
-    fecha_cancelada_dt = date.fromisoformat(cita["fecha"])
+    fecha_can_str = cita["fecha"].isoformat() if hasattr(cita["fecha"], "isoformat") else str(cita["fecha"])
+    hora_ini_can = str(cita["hora_inicio"])[:5]
+    fecha_cancelada_dt = date.fromisoformat(fecha_can_str)
     dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
     meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
     fecha_legible_can = f"{dias_es[fecha_cancelada_dt.weekday()]} {fecha_cancelada_dt.day} de {meses_es[fecha_cancelada_dt.month-1]}"
-    hora_legible_can = hora_a_texto(cita["hora_inicio"])
+    hora_legible_can = hora_a_texto(hora_ini_can)
     nombre_corto = cita["cliente_nombre"].split()[0]
     return {
         "exito": True,
