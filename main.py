@@ -714,6 +714,7 @@ def status():
         "backend": "ok",
         "google_calendar": "conectado" if calendar_service.enabled else "no configurado (las citas se guardan solo en BD local)",
         "calendar_id": os.getenv("GOOGLE_CALENDAR_ID", "no configurado"),
+        "base_datos": "postgresql (persistente)" if _USE_PG else "sqlite (efímera — se borra en cada deploy)",
     }
 
 
@@ -1196,10 +1197,10 @@ def modificar_cita(cita_id: int, req: ModificarCitaRequest, background_tasks: Ba
         raise HTTPException(404, f"Servicio '{nuevo_servicio_id}' no encontrado.")
 
     try:
-        nueva_fecha_dt = date.fromisoformat(nueva_fecha_str)
+        nueva_fecha_dt = parsear_fecha(nueva_fecha_str)
     except ValueError:
         conn.close()
-        raise HTTPException(400, "Formato de fecha inválido.")
+        raise HTTPException(400, f"No entendí la fecha '{nueva_fecha_str}'. Prueba con 'lunes', 'el martes', '30 de marzo'...")
 
     estilista = obtener_estilista(nuevo_estilista_id)
     if not estilista:
