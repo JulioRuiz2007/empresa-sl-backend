@@ -405,6 +405,13 @@ def dia_nombre(fecha: date) -> str:
     return DIAS_SEMANA_ES.get(fecha.weekday(), "desconocido")
 
 
+def dia_en_plural(fecha: date) -> str:
+    """Devuelve el día para usarlo en frases como 'los lunes', 'los sábados'.
+    Lunes/martes/miércoles/jueves/viernes ya terminan en 's', no se añade otra."""
+    dia = dia_nombre(fecha)
+    return dia if dia.endswith("s") else dia + "s"
+
+
 def salon_abierto(fecha: date) -> dict:
     """Devuelve el horario del salón para esa fecha, o None si está cerrado."""
     dia = dia_nombre(fecha)
@@ -674,7 +681,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
     elif exc.status_code == 409:
         voz = f"{msg}"
     elif exc.status_code == 400:
-        voz = f"Hay un problema con los datos: {msg}"
+        voz = msg
     else:
         voz = "Ha ocurrido un error inesperado. Por favor, inténtalo de nuevo."
     return JSONResponse(
@@ -789,12 +796,12 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
 
     horario = salon_abierto(fecha_dt)
     if not horario:
-        dia = dia_nombre(fecha_dt)
         return {
             "disponible": False,
-            "mensaje": f"El salón está cerrado los {dia}s.",
+            "mensaje": f"El salón está cerrado los {dia_en_plural(fecha_dt)}.",
             "sugerencia": "Prueba otro día de lunes a sábado.",
             "huecos": {},
+            "mensaje_voz": f"Lo siento, los {dia_en_plural(fecha_dt)} el salón está cerrado. ¿Probamos otro día?",
         }
 
     # Comprobar antelación mínima
@@ -927,7 +934,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
     # Validar que el salón está abierto
     horario = salon_abierto(fecha_dt)
     if not horario:
-        raise HTTPException(400, f"El salón está cerrado los {dia_nombre(fecha_dt)}s.")
+        raise HTTPException(400, f"El salón está cerrado los {dia_en_plural(fecha_dt)}.")
 
     # Normalizar hora: "9" → "09:00", "9:00" → "09:00", "2 de la tarde" → "14:00"
     import re as _re_hora
@@ -1003,7 +1010,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
     if not estilista_trabaja(estilista, fecha_dt):
         dias = [DIAS_SEMANA_ES[d] for d in estilista["dias_trabaja"]]
         conn.close()
-        raise HTTPException(400, f"{estilista['nombre']} no trabaja los {dia_nombre(fecha_dt)}s. Trabaja: {', '.join(dias)}.")
+        raise HTTPException(400, f"{estilista['nombre']} no trabaja los {dia_en_plural(fecha_dt)}. Trabaja: {', '.join(dias)}.")
 
     # Validar que el estilista hace ese servicio
     if not estilista_hace_servicio(estilista, servicio_id_canon):
@@ -1215,11 +1222,11 @@ def modificar_cita(cita_id: int, req: ModificarCitaRequest, background_tasks: Ba
     horario = salon_abierto(nueva_fecha_dt)
     if not horario:
         conn.close()
-        raise HTTPException(400, f"El salón está cerrado los {dia_nombre(nueva_fecha_dt)}s.")
+        raise HTTPException(400, f"El salón está cerrado los {dia_en_plural(nueva_fecha_dt)}.")
 
     if not estilista_trabaja(estilista, nueva_fecha_dt):
         conn.close()
-        raise HTTPException(400, f"{estilista['nombre']} no trabaja los {dia_nombre(nueva_fecha_dt)}s.")
+        raise HTTPException(400, f"{estilista['nombre']} no trabaja los {dia_en_plural(nueva_fecha_dt)}.")
 
     if not estilista_hace_servicio(estilista, nuevo_servicio_id):
         conn.close()
@@ -1350,7 +1357,7 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
 
     horario = salon_abierto(fecha_dt)
     if not horario:
-        raise HTTPException(400, f"El salón está cerrado los {dia_nombre(fecha_dt)}s.")
+        raise HTTPException(400, f"El salón está cerrado los {dia_en_plural(fecha_dt)}.")
 
     ahora = ahora_madrid()
     minimo = ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])
@@ -1395,7 +1402,7 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
                 if not estilista_hace_servicio(estilista, sid):
                     raise HTTPException(400, f"{estilista['nombre']} no realiza '{servicio['nombre']}'.")
                 if not estilista_trabaja(estilista, fecha_dt):
-                    raise HTTPException(400, f"{estilista['nombre']} no trabaja los {dia_nombre(fecha_dt)}s.")
+                    raise HTTPException(400, f"{estilista['nombre']} no trabaja los {dia_en_plural(fecha_dt)}.")
                 citas_est = obtener_citas_estilista(conn, estilista["id"], fecha_dt)
                 # Excluir las citas del combo ya creadas para evitar falsos conflictos
                 ids_ya_creadas = [c["cita_id"] for c in citas_creadas]
