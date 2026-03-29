@@ -854,10 +854,17 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             raise HTTPException(404, f"Estilista '{estilista_id}' no encontrado.")
         if not estilista_hace_servicio(est, servicio_id):
             conn.close()
+            otros = [e["nombre"] for e in ESTILISTAS if estilista_hace_servicio(e, servicio_id)]
+            otros_str = " o ".join(otros) if otros else "ninguno disponible"
             return {
                 "disponible": False,
-                "mensaje": f"{est['nombre']} no realiza el servicio '{servicio['nombre']}'. Estilistas disponibles para este servicio: {[e['nombre'] for e in ESTILISTAS if estilista_hace_servicio(e, servicio_id)]}",
+                "mensaje": f"{est['nombre']} no realiza el servicio '{servicio['nombre']}'.",
+                "estilistas_que_lo_hacen": otros,
                 "huecos": {},
+                "mensaje_voz": (
+                    f"Lo siento, {est['nombre']} no hace {servicio['nombre']}. "
+                    f"Para este servicio puedes ir con {otros_str}. ¿Cuál te viene mejor?"
+                ),
             }
         estilistas_validos = [est]
 
@@ -1753,10 +1760,25 @@ def _siguiente_hueco(servicio_id: str, estilista_id: str = "cualquiera", dias_ma
         est = obtener_estilista(estilista_id)
         if not est:
             raise HTTPException(404, f"Estilista '{estilista_id}' no encontrado.")
-        estilistas_base = [est] if estilista_hace_servicio(est, servicio_id) else []
+        if not estilista_hace_servicio(est, servicio_id):
+            otros = [e["nombre"] for e in ESTILISTAS if estilista_hace_servicio(e, servicio_id)]
+            otros_str = " o ".join(otros) if otros else "ninguno disponible"
+            return {
+                "disponible": False,
+                "mensaje_voz": (
+                    f"Lo siento, {est['nombre']} no hace {servicio['nombre']}. "
+                    f"Para este servicio puedes ir con {otros_str}. ¿Con cuál prefieres?"
+                ),
+                "estilistas_que_lo_hacen": otros,
+            }
+        estilistas_base = [est]
 
     if not estilistas_base:
-        raise HTTPException(404, f"No hay estilistas que realicen '{servicio['nombre']}'.")
+        otros = [e["nombre"] for e in ESTILISTAS]
+        return {
+            "disponible": False,
+            "mensaje_voz": f"Lo siento, ningún estilista realiza {servicio['nombre']} actualmente.",
+        }
 
     conn = get_db()
     ahora = ahora_madrid()
