@@ -869,7 +869,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
     servicio = obtener_servicio(req.servicio_id)
     if not servicio:
         raise HTTPException(404, f"Servicio '{req.servicio_id}' no encontrado.")
-    req.servicio_id = servicio["id"]  # normalizar al ID canónico
+    servicio_id_canon = servicio["id"]  # normalizar al ID canónico
 
     try:
         fecha_dt = parsear_fecha(req.fecha)
@@ -941,7 +941,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         return None
 
     if req.estilista_id in ("cualquiera", "any", ""):
-        estilista = buscar_mejor_estilista(conn, req.servicio_id, fecha_dt, hora_norm, servicio["duracion_min"])
+        estilista = buscar_mejor_estilista(conn, servicio_id_canon, fecha_dt, hora_norm, servicio["duracion_min"])
         if not estilista:
             conn.close()
             raise HTTPException(409, "No hay estilistas disponibles para ese servicio, fecha y hora.")
@@ -958,7 +958,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         raise HTTPException(400, f"{estilista['nombre']} no trabaja los {dia_nombre(fecha_dt)}s. Trabaja: {', '.join(dias)}.")
 
     # Validar que el estilista hace ese servicio
-    if not estilista_hace_servicio(estilista, req.servicio_id):
+    if not estilista_hace_servicio(estilista, servicio_id_canon):
         servicios_est = [obtener_servicio(s)["nombre"] for s in estilista["especialidades"]]
         conn.close()
         raise HTTPException(400, f"{estilista['nombre']} no realiza '{servicio['nombre']}'. Sus servicios: {', '.join(servicios_est)}.")
@@ -998,7 +998,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
             req.cliente_nombre,
             req.cliente_telefono,
             1 if req.cliente_nuevo else 0,
-            req.servicio_id,
+            servicio_id_canon,
             estilista["id"],
             fecha_dt.isoformat(),
             hora_norm,
