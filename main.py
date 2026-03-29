@@ -861,6 +861,14 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             }
         estilistas_validos = [est]
 
+    # Normalizar hora_preferida ANTES del bucle para poder comparar contra todos los huecos
+    hora_pref_pre = ""
+    if hora_preferida:
+        try:
+            hora_pref_pre = normalizar_hora(hora_preferida)
+        except Exception:
+            hora_pref_pre = ""
+
     for est in estilistas_validos:
         huecos = encontrar_huecos_libres(conn, est["id"], fecha_dt, servicio["duracion_min"])
 
@@ -870,6 +878,10 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             huecos = [h for h in huecos if h >= hora_minima]
 
         if huecos:
+            # Comprobar si la hora_preferida exacta está disponible para ESTE estilista
+            # antes de reducir a la muestra de 3
+            tiene_hora_exacta = hora_pref_pre and hora_pref_pre in huecos
+
             manana = [h for h in huecos if h < "13:00"]
             tarde = [h for h in huecos if h >= "13:00"]
 
@@ -882,21 +894,36 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             else:
                 pool = huecos
 
-            # Seleccionar 3 opciones representativas del pool filtrado
-            huecos_muestra = []
-            if pool:
-                huecos_muestra.append(pool[0])
-            if len(pool) > 2:
-                huecos_muestra.append(pool[len(pool) // 2])
-            if len(pool) > 1:
-                huecos_muestra.append(pool[-1])
-            huecos_muestra = sorted(set(huecos_muestra))
+            if hora_pref_pre and not tiene_hora_exacta:
+                # Hora específica pedida pero no disponible para este estilista
+                # → mostrar las 2 opciones más cercanas a la hora pedida
+                def _mins(hhmm):
+                    h, m = map(int, hhmm.split(":"))
+                    return h * 60 + m
+                pref_mins = _mins(hora_pref_pre)
+                pool_ordenado = sorted(pool, key=lambda h: abs(_mins(h) - pref_mins))
+                huecos_muestra = sorted(pool_ordenado[:2])
+            else:
+                # Sin hora preferida o con hora exacta disponible → 3 representativas
+                huecos_muestra = []
+                if pool:
+                    huecos_muestra.append(pool[0])
+                if len(pool) > 2:
+                    huecos_muestra.append(pool[len(pool) // 2])
+                if len(pool) > 1:
+                    huecos_muestra.append(pool[-1])
+                huecos_muestra = sorted(set(huecos_muestra))
+
+            # Si la hora exacta está disponible pero no cayó en la muestra, añadirla
+            if tiene_hora_exacta and hora_pref_pre not in huecos_muestra:
+                huecos_muestra = sorted(set(huecos_muestra + [hora_pref_pre]))
 
             resultado[est["nombre"]] = {
                 "estilista_id": est["id"],
                 "huecos_disponibles": huecos_muestra,
                 "huecos_legibles": [hora_a_texto(h) for h in huecos_muestra],
                 "hay_mas_opciones": len(pool) > len(huecos_muestra),
+                "tiene_hora_exacta": bool(tiene_hora_exacta),
             }
 
     conn.close()
@@ -935,21 +962,12 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
     meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
     fecha_legible = f"{dias_es[fecha_dt.weekday()]} {fecha_dt.day} de {meses_es[fecha_dt.month-1]}"
 
-    # Normalizar hora_preferida a "HH:MM" para comparar
-    hora_pref_norm = ""
-    if hora_preferida:
-        try:
-            hora_pref_norm = normalizar_hora(hora_preferida)
-        except Exception:
-            hora_pref_norm = ""
+    # hora_pref_norm ya se calculó antes del bucle como hora_pref_pre
+    hora_pref_norm = hora_pref_pre
 
     # ¿La hora pedida exacta está disponible para algún estilista?
-    hora_exacta_disponible = False
-    if hora_pref_norm:
-        for datos in resultado.values():
-            if hora_pref_norm in datos["huecos_disponibles"]:
-                hora_exacta_disponible = True
-                break
+    # Usamos tiene_hora_exacta calculado contra TODOS los huecos (no solo la muestra)
+    hora_exacta_disponible = any(datos.get("tiene_hora_exacta") for datos in resultado.values())
 
     # Generar mensaje_voz natural
     partes_voz = []
