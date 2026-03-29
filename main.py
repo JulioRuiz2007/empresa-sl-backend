@@ -18,10 +18,21 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime, date, time, timedelta
+from zoneinfo import ZoneInfo
 import sqlite3
 import json
 import os
 import logging
+
+TZ = ZoneInfo("Europe/Madrid")
+
+
+def ahora_madrid() -> datetime:
+    return datetime.now(TZ)
+
+
+def hoy_madrid() -> date:
+    return ahora_madrid().date()
 
 from google_calendar import calendar_service
 
@@ -111,7 +122,7 @@ def parsear_fecha(texto: str) -> date:
     texto = texto.strip().lower()
     texto = _re.sub(r"^(el|la)\s+", "", texto).strip()
     texto = _re.sub(r"\b(que viene|próximo|proximo|este|esta|next|this|coming)\b", "", texto).strip()
-    hoy = date.today()
+    hoy = hoy_madrid()
 
     # Formato estándar YYYY-MM-DD
     try:
@@ -720,7 +731,7 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
         }
 
     # Comprobar antelación mínima
-    ahora = datetime.now()
+    ahora = ahora_madrid()
     fecha_hora_minima = ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])
     if fecha_dt < fecha_hora_minima.date():
         return {
@@ -864,7 +875,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         raise HTTPException(400, f"El horario del salón es de {horario['abre']} a {horario['cierra']}. El servicio terminaría a las {hora_fin_str}, que está fuera de horario.")
 
     # Validar antelación mínima
-    ahora = datetime.now()
+    ahora = ahora_madrid()
     fecha_hora_cita = datetime.combine(fecha_dt, hora_inicio)
     minimo = ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])
     if fecha_hora_cita < minimo:
@@ -1052,7 +1063,7 @@ def buscar_citas(
     # Construir mensaje_voz con las citas encontradas (máx 3 para no saturar)
     dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
     meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
-    proximas = [c for c in citas if c["fecha"] >= date.today().isoformat()][:3]
+    proximas = [c for c in citas if c["fecha"] >= hoy_madrid().isoformat()][:3]
     if proximas:
         if len(proximas) == 1:
             c = proximas[0]
@@ -1246,7 +1257,7 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
     if not horario:
         raise HTTPException(400, f"El salón está cerrado los {dia_nombre(fecha_dt)}s.")
 
-    ahora = datetime.now()
+    ahora = ahora_madrid()
     minimo = ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])
     if fecha_dt < minimo.date():
         raise HTTPException(400, f"Las citas deben reservarse con al menos {SALON_CONFIG['antelacion_minima_horas']} horas de antelación.")
@@ -1387,7 +1398,7 @@ def proximos_dias_disponibles(
 
     conn = get_db()
     resultado = []
-    ahora = datetime.now()
+    ahora = ahora_madrid()
     hoy = ahora.date()
 
     if estilista_id == "cualquiera":
@@ -1506,7 +1517,7 @@ def siguiente_hueco_disponible(
         raise HTTPException(404, f"No hay estilistas que realicen '{servicio['nombre']}'.")
 
     conn = get_db()
-    ahora = datetime.now()
+    ahora = ahora_madrid()
     hoy = ahora.date()
     dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
     meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
