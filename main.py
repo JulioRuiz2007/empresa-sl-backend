@@ -680,6 +680,19 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     )
 
 
+@app.exception_handler(Exception)
+async def generic_exception_handler(request: Request, exc: Exception):
+    logger.error(f"❌ Excepción no controlada en {request.method} {request.url.path}: {type(exc).__name__}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": True,
+            "detalle": f"{type(exc).__name__}: {str(exc)}",
+            "mensaje_voz": "Lo siento, ha ocurrido un error interno. Por favor, inténtalo de nuevo.",
+        },
+    )
+
+
 # --- STATUS ---
 
 @app.get("/status")
