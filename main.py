@@ -758,6 +758,7 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
     servicio = obtener_servicio(servicio_id)
     if not servicio:
         raise HTTPException(404, f"Servicio '{servicio_id}' no encontrado. Servicios válidos: {[s['id'] for s in SERVICIOS]}")
+    servicio_id = servicio["id"]  # normalizar al ID canónico
 
     horario = salon_abierto(fecha_dt)
     if not horario:
@@ -868,6 +869,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
     servicio = obtener_servicio(req.servicio_id)
     if not servicio:
         raise HTTPException(404, f"Servicio '{req.servicio_id}' no encontrado.")
+    req.servicio_id = servicio["id"]  # normalizar al ID canónico
 
     try:
         fecha_dt = parsear_fecha(req.fecha)
@@ -1434,6 +1436,7 @@ def proximos_dias_disponibles(
     servicio = obtener_servicio(servicio_id)
     if not servicio:
         raise HTTPException(404, f"Servicio '{servicio_id}' no encontrado.")
+    servicio_id = servicio["id"]  # normalizar al ID canónico
 
     conn = get_db()
     resultado = []
@@ -1543,6 +1546,7 @@ def siguiente_hueco_disponible(
     servicio = obtener_servicio(servicio_id)
     if not servicio:
         raise HTTPException(404, f"Servicio '{servicio_id}' no encontrado.")
+    servicio_id = servicio["id"]  # normalizar al ID canónico
 
     if estilista_id == "cualquiera":
         estilistas_base = [e for e in ESTILISTAS if estilista_hace_servicio(e, servicio_id)]
