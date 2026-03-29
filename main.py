@@ -930,7 +930,7 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
 
     # Validar antelación mínima
     ahora = ahora_madrid()
-    fecha_hora_cita = datetime.combine(fecha_dt, hora_inicio)
+    fecha_hora_cita = datetime.combine(fecha_dt, hora_inicio, tzinfo=TZ)
     minimo = ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])
     if fecha_hora_cita < minimo:
         raise HTTPException(400, f"Las citas deben reservarse con al menos {SALON_CONFIG['antelacion_minima_horas']} horas de antelación.")
