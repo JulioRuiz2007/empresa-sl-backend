@@ -1533,12 +1533,27 @@ def cancelar_cita_post(req: CancelarConIdRequest, background_tasks: BackgroundTa
 
 # --- SIGUIENTE HUECO DISPONIBLE ---
 
+class SiguienteHuecoRequest(BaseModel):
+    servicio_id: str = Field(..., description="Servicio deseado. Acepta lenguaje natural: 'corte de pelo', 'tinte', 'manicura', etc.")
+    estilista_id: str = Field(default="cualquiera", description="ID del estilista o 'cualquiera'")
+    dias_max: int = Field(default=14, ge=1, le=30)
+
+
+@app.post("/disponibilidad/siguiente-hueco", summary="Primer hueco disponible (POST para Retell)")
+def siguiente_hueco_post(req: SiguienteHuecoRequest):
+    return _siguiente_hueco(req.servicio_id, req.estilista_id, req.dias_max)
+
+
 @app.get("/disponibilidad/siguiente-hueco", summary="Primer hueco disponible para un servicio")
 def siguiente_hueco_disponible(
     servicio_id: str = Query(..., description="ID del servicio"),
     estilista_id: str = Query(default="cualquiera", description="ID del estilista o 'cualquiera'"),
     dias_max: int = Query(default=14, ge=1, le=30, description="Días máximos a buscar hacia adelante"),
 ):
+    return _siguiente_hueco(servicio_id, estilista_id, dias_max)
+
+
+def _siguiente_hueco(servicio_id: str, estilista_id: str = "cualquiera", dias_max: int = 14):
     """
     Devuelve el primer hueco libre disponible para un servicio.
     Ideal para cuando el cliente pregunta: '¿cuándo antes me podéis atender?'
