@@ -335,9 +335,48 @@ class CrearComboRequest(BaseModel):
 # LÓGICA DE NEGOCIO
 # ═══════════════════════════════════════════════════════════════
 
+SERVICIO_ALIAS = {
+    # corte
+    "corte": "corte", "corte de pelo": "corte", "corte de cabello": "corte",
+    "pelo": "corte", "haircut": "corte", "cut": "corte",
+    # coloracion
+    "coloracion": "coloracion", "coloración": "coloracion", "color": "coloracion",
+    "mechas": "coloracion", "tinte": "coloracion", "tinte de pelo": "coloracion",
+    "highlights": "coloracion", "balayage": "coloracion",
+    # brushing
+    "brushing": "brushing", "secado": "brushing", "blow dry": "brushing",
+    "secado con forma": "brushing", "peinado": "brushing",
+    # unas
+    "unas": "unas", "uñas": "unas", "manicura": "unas", "pedicura": "unas",
+    "nails": "unas", "manicure": "unas",
+    # facial
+    "facial": "facial", "limpieza facial": "facial", "tratamiento facial": "facial",
+    "limpieza": "facial",
+    # depilacion
+    "depilacion": "depilacion", "depilación": "depilacion", "waxing": "depilacion",
+    "cera": "depilacion",
+}
+
+
 def obtener_servicio(servicio_id: str) -> dict:
+    import unicodedata
+    def norm(s):
+        return unicodedata.normalize("NFD", s.lower().strip()).encode("ascii", "ignore").decode()
+
+    sid = norm(servicio_id)
+    # Exact ID match
     for s in SERVICIOS:
-        if s["id"] == servicio_id:
+        if s["id"] == sid:
+            return s
+    # Alias match
+    alias_id = SERVICIO_ALIAS.get(sid)
+    if alias_id:
+        for s in SERVICIOS:
+            if s["id"] == alias_id:
+                return s
+    # Partial match against ID or name
+    for s in SERVICIOS:
+        if sid in norm(s["id"]) or sid in norm(s["nombre"]) or norm(s["nombre"]) in sid:
             return s
     return None
 
