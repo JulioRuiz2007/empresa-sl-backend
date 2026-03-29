@@ -858,18 +858,39 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             "mensaje": f"No hay disponibilidad para '{servicio['nombre']}' el {fecha}.",
             "sugerencia": "Prueba otro día o consulta disponibilidad para los próximos días.",
             "huecos": {},
+            "mensaje_voz": f"Lo siento, no tenemos disponibilidad para {servicio['nombre']} ese día. ¿Probamos otro día?",
         }
 
     dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
+    meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
+    fecha_legible = f"{dias_es[fecha_dt.weekday()]} {fecha_dt.day} de {meses_es[fecha_dt.month-1]}"
+
+    # Generar mensaje_voz natural
+    partes_voz = []
+    for nombre_est, datos in resultado.items():
+        legibles = datos["huecos_legibles"]
+        if len(legibles) == 1:
+            partes_voz.append(f"con {nombre_est} a {legibles[0]}")
+        elif len(legibles) == 2:
+            partes_voz.append(f"con {nombre_est} a {legibles[0]} o {legibles[1]}")
+        else:
+            partes_voz.append(f"con {nombre_est} a {', '.join(legibles[:-1])} o {legibles[-1]}")
+
+    if len(partes_voz) == 1:
+        msg_voz = f"Para {servicio['nombre']} el {fecha_legible} tengo {partes_voz[0]}. ¿Te viene bien?"
+    else:
+        msg_voz = f"Para {servicio['nombre']} el {fecha_legible} tengo: {'; '.join(partes_voz)}. ¿Con quién y a qué hora te viene mejor?"
+
     return {
         "disponible": True,
         "fecha": fecha_dt.isoformat(),
-        "fecha_legible": f"{dias_es[fecha_dt.weekday()]} {fecha_dt.day} de {['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'][fecha_dt.month-1]}",
+        "fecha_legible": fecha_legible,
         "servicio": servicio["nombre"],
         "duracion_min": servicio["duracion_min"],
         "precio_desde": servicio["precio"],
         "buffer_entre_citas_min": SALON_CONFIG["buffer_minutos"],
         "huecos": resultado,
+        "mensaje_voz": msg_voz,
     }
 
 
@@ -1500,11 +1521,30 @@ def proximos_dias_disponibles(
             })
 
     conn.close()
+
+    if not resultado:
+        msg_voz = f"Lo siento, no tenemos disponibilidad para {servicio['nombre']} en los próximos {dias} días. ¿Quieres que lo busque para más adelante?"
+    else:
+        # Resumir los primeros 2 días disponibles en voz natural
+        partes = []
+        for d in resultado[:2]:
+            estilistas = list(d["estilistas_disponibles"].items())
+            if estilistas:
+                nombre_est, datos = estilistas[0]
+                horas = datos["proximos_huecos_legibles"][:2]
+                horas_str = " o ".join(horas) if horas else ""
+                partes.append(f"el {d['fecha_legible']} {horas_str} con {nombre_est}")
+        if partes:
+            msg_voz = f"Para {servicio['nombre']} tengo disponibilidad {', y '.join(partes)}. ¿Cuál te viene mejor?"
+        else:
+            msg_voz = f"Tengo varios huecos disponibles para {servicio['nombre']} en los próximos días. ¿Qué día te va mejor?"
+
     return {
         "servicio": servicio["nombre"],
         "duracion_min": servicio["duracion_min"],
         "dias_consultados": dias,
         "dias_con_disponibilidad": resultado,
+        "mensaje_voz": msg_voz,
     }
 
 
