@@ -962,8 +962,27 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
         else:
             partes_voz.append(f"con {nombre_est} a {', '.join(legibles[:-1])} o {legibles[-1]}")
 
-    if hora_pref_norm and not hora_exacta_disponible:
-        # Hora concreta pedida pero no disponible → mensaje jerárquico
+    if hora_pref_norm and hora_exacta_disponible:
+        # Hora pedida exacta SÍ disponible → confirmar directamente, sin dar más opciones
+        hora_pref_legible = hora_a_texto(hora_pref_norm)
+        # ¿Con qué estilistas está disponible esa hora?
+        estilistas_con_hora = [
+            nombre for nombre, datos in resultado.items()
+            if hora_pref_norm in datos["huecos_disponibles"]
+        ]
+        if len(estilistas_con_hora) == 1:
+            msg_voz = (
+                f"Sí, tengo disponible {hora_pref_legible} el {fecha_legible} con {estilistas_con_hora[0]}. "
+                f"¿Te lo confirmo?"
+            )
+        else:
+            estilistas_str = " o ".join(estilistas_con_hora)
+            msg_voz = (
+                f"Sí, tengo {hora_pref_legible} el {fecha_legible} con {estilistas_str}. "
+                f"¿Con quién te lo confirmo?"
+            )
+    elif hora_pref_norm and not hora_exacta_disponible:
+        # Hora concreta pedida pero NO disponible → mensaje jerárquico
         hora_pref_legible = hora_a_texto(hora_pref_norm)
         alternativas_str = "; ".join(partes_voz)
         msg_voz = (
