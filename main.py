@@ -955,12 +955,22 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             if tiene_hora_exacta and hora_pref_pre not in huecos_muestra:
                 huecos_muestra = sorted(set(huecos_muestra + [hora_pref_pre]))
 
+            # Seleccionar hasta 4 huecos representativos por franja para el LLM
+            manana_muestra = manana[:4] if len(manana) > 4 else manana
+            tarde_muestra = tarde[:4] if len(tarde) > 4 else tarde
+
             resultado[est["nombre"]] = {
                 "estilista_id": est["id"],
                 "huecos_disponibles": huecos_muestra,
                 "huecos_legibles": [hora_a_texto(h) for h in huecos_muestra],
                 "hay_mas_opciones": len(pool) > len(huecos_muestra),
                 "tiene_hora_exacta": bool(tiene_hora_exacta),
+                "huecos_manana": manana_muestra,
+                "huecos_manana_legibles": [hora_a_texto(h) for h in manana_muestra],
+                "huecos_tarde": tarde_muestra,
+                "huecos_tarde_legibles": [hora_a_texto(h) for h in tarde_muestra],
+                "total_manana": len(manana),
+                "total_tarde": len(tarde),
             }
 
     conn.close()
@@ -1077,16 +1087,21 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
         datos_unico = list(resultado.values())[0]
         legibles = datos_unico["huecos_legibles"]
         hay_mas = datos_unico["hay_mas_opciones"]
+        m_leg = datos_unico["huecos_manana_legibles"]
+        t_leg = datos_unico["huecos_tarde_legibles"]
         if len(legibles) == 1:
             msg_voz = (
                 f"Para {servicio['nombre']} el {fecha_legible}, "
                 f"tengo un hueco a {legibles[0]} con {nombres_estilistas[0]}. ¿Te va bien?"
             )
         elif hay_mas and hay_manana and hay_tarde:
+            # Desglosar mañana/tarde para que el LLM pueda responder sin segunda llamada
+            m_str = ", ".join(m_leg[:-1]) + " o " + m_leg[-1] if len(m_leg) > 1 else m_leg[0] if m_leg else ""
+            t_str = ", ".join(t_leg[:-1]) + " o " + t_leg[-1] if len(t_leg) > 1 else t_leg[0] if t_leg else ""
             msg_voz = (
                 f"Para {servicio['nombre']} el {fecha_legible} con {nombres_estilistas[0]} "
-                f"tengo huecos tanto por la mañana como por la tarde. "
-                f"¿Qué te viene mejor, mañana o tarde?"
+                f"tengo huecos por la mañana a {m_str}, y por la tarde a {t_str}. "
+                f"¿Qué te viene mejor?"
             )
         else:
             opciones = ", ".join(legibles[:-1]) + " o " + legibles[-1]
@@ -1101,21 +1116,49 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
         nombres_str = ", ".join(nombres_estilistas[:-1]) + " y " + nombres_estilistas[-1]
 
         if alguno_tiene_mas and hay_manana and hay_tarde:
-            # Muchas opciones → preguntar preferencia primero (más natural por voz)
+            # Desglosar por estilista + franja para que el LLM tenga toda la info
+            detalle_partes = []
+            for nombre_est, datos in resultado.items():
+                m_leg = datos["huecos_manana_legibles"]
+                t_leg = datos["huecos_tarde_legibles"]
+                partes_est = []
+                if m_leg:
+                    m_str = ", ".join(m_leg[:-1]) + " o " + m_leg[-1] if len(m_leg) > 1 else m_leg[0]
+                    partes_est.append(f"por la mañana a {m_str}")
+                if t_leg:
+                    t_str = ", ".join(t_leg[:-1]) + " o " + t_leg[-1] if len(t_leg) > 1 else t_leg[0]
+                    partes_est.append(f"por la tarde a {t_str}")
+                if partes_est:
+                    detalle_partes.append(f"con {nombre_est} {', y '.join(partes_est)}")
+
             msg_voz = (
-                f"El {fecha_legible} tenemos bastante disponibilidad para {servicio['nombre']} "
-                f"con {nombres_str}, tanto por la mañana como por la tarde. "
-                f"¿Qué te viene mejor, mañana o tarde? ¿Tienes preferencia de estilista?"
+                f"El {fecha_legible} tenemos disponibilidad para {servicio['nombre']}: "
+                f"{'; '.join(detalle_partes)}. "
+                f"¿Qué te viene mejor?"
             )
         elif alguno_tiene_mas and hay_manana and not hay_tarde:
+            # Solo mañana — listar horas de mañana por estilista
+            detalle_partes = []
+            for nombre_est, datos in resultado.items():
+                m_leg = datos["huecos_manana_legibles"]
+                if m_leg:
+                    m_str = ", ".join(m_leg[:-1]) + " o " + m_leg[-1] if len(m_leg) > 1 else m_leg[0]
+                    detalle_partes.append(f"con {nombre_est} a {m_str}")
             msg_voz = (
-                f"El {fecha_legible} para {servicio['nombre']} solo queda hueco por la mañana, "
-                f"con {nombres_str}. ¿Tienes preferencia de estilista o te digo las horas?"
+                f"El {fecha_legible} para {servicio['nombre']} solo queda hueco por la mañana: "
+                f"{'; '.join(detalle_partes)}. ¿Cuál te viene mejor?"
             )
         elif alguno_tiene_mas and not hay_manana and hay_tarde:
+            # Solo tarde — listar horas de tarde por estilista
+            detalle_partes = []
+            for nombre_est, datos in resultado.items():
+                t_leg = datos["huecos_tarde_legibles"]
+                if t_leg:
+                    t_str = ", ".join(t_leg[:-1]) + " o " + t_leg[-1] if len(t_leg) > 1 else t_leg[0]
+                    detalle_partes.append(f"con {nombre_est} a {t_str}")
             msg_voz = (
-                f"El {fecha_legible} para {servicio['nombre']} solo queda hueco por la tarde, "
-                f"con {nombres_str}. ¿Tienes preferencia de estilista o te digo las horas?"
+                f"El {fecha_legible} para {servicio['nombre']} solo queda hueco por la tarde: "
+                f"{'; '.join(detalle_partes)}. ¿Cuál te viene mejor?"
             )
         else:
             # Pocas opciones → listar directamente pero máximo 2 estilistas
