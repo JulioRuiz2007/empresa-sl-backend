@@ -1551,7 +1551,10 @@ def cancelar_cita(cita_id: int, background_tasks: BackgroundTasks):
 
     if not cita:
         conn.close()
-        raise HTTPException(404, f"No se encontró cita activa con ID {cita_id}.")
+        return {
+            "exito": False,
+            "mensaje_voz": "No he encontrado ninguna cita activa con ese identificador. ¿Quieres que busque tu cita por tu número de teléfono?",
+        }
 
     servicio = obtener_servicio(cita["servicio_id"])
     estilista = obtener_estilista(cita["estilista_id"])
@@ -1873,6 +1876,61 @@ def modificar_cita_post(req: ModificarConIdRequest, background_tasks: Background
 def cancelar_cita_post(req: CancelarConIdRequest, background_tasks: BackgroundTasks):
     """Ruta alternativa POST para Retell AI que no soporta DELETE."""
     return cancelar_cita(req.cita_id, background_tasks)
+
+
+class CancelarPorTelefonoRequest(BaseModel):
+    telefono: str = Field(..., description="Teléfono del cliente para buscar su cita más reciente")
+    cita_id: Optional[int] = Field(default=None, description="ID de la cita (opcional, si está disponible)")
+
+
+@app.post("/citas/cancelar-por-telefono", summary="Cancelar la cita más reciente de un cliente por teléfono (para Retell)")
+def cancelar_cita_por_telefono(req: CancelarPorTelefonoRequest, background_tasks: BackgroundTasks):
+    """
+    Busca la cita confirmada más próxima del cliente por teléfono y la cancela.
+    Si se proporciona cita_id, cancela esa cita específica; si no, cancela la más próxima futura.
+    """
+    conn = get_db()
+
+    # Si viene cita_id, intentar primero por ID
+    if req.cita_id:
+        rows = _query(conn, "SELECT * FROM citas WHERE id = ? AND estado = 'confirmada'", (req.cita_id,))
+        if rows:
+            cita = rows[0]
+            conn.close()
+            return cancelar_cita(cita["id"], background_tasks)
+
+    # Buscar por teléfono: cita confirmada más próxima (hoy o futura)
+    hoy = hoy_madrid().isoformat()
+    rows = _query(
+        conn,
+        "SELECT * FROM citas WHERE cliente_telefono = ? AND estado = 'confirmada' AND fecha >= ? ORDER BY fecha ASC, hora_inicio ASC LIMIT 1",
+        (req.telefono, hoy),
+    )
+    cita = rows[0] if rows else None
+
+    if not cita:
+        # Intentar sin normalizar el teléfono (puede tener espacios o formato distinto)
+        tel_digits = "".join(c for c in req.telefono if c.isdigit())
+        rows2 = _query(
+            conn,
+            "SELECT * FROM citas WHERE estado = 'confirmada' AND fecha >= ? ORDER BY fecha ASC, hora_inicio ASC",
+            (hoy,),
+        )
+        for r in rows2:
+            r_digits = "".join(c for c in str(r["cliente_telefono"]) if c.isdigit())
+            if tel_digits and r_digits.endswith(tel_digits[-9:]):
+                cita = r
+                break
+
+    conn.close()
+
+    if not cita:
+        return {
+            "exito": False,
+            "mensaje_voz": "No he encontrado ninguna cita activa con ese número de teléfono. ¿Puedes confirmarme el número?",
+        }
+
+    return cancelar_cita(cita["id"], background_tasks)
 
 
 # --- SIGUIENTE HUECO DISPONIBLE ---
