@@ -1097,25 +1097,25 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
 
     else:
         # ── Múltiples estilistas con disponibilidad ──
-        total_huecos = sum(len(d["huecos_disponibles"]) for d in resultado.values())
+        alguno_tiene_mas = any(d.get("hay_mas_opciones") for d in resultado.values())
         nombres_str = ", ".join(nombres_estilistas[:-1]) + " y " + nombres_estilistas[-1]
 
-        if total_huecos > 6 and hay_manana and hay_tarde:
-            # Muchas opciones → preguntar preferencia primero
+        if alguno_tiene_mas and hay_manana and hay_tarde:
+            # Muchas opciones → preguntar preferencia primero (más natural por voz)
             msg_voz = (
-                f"El {fecha_legible} tenemos disponibilidad para {servicio['nombre']} "
+                f"El {fecha_legible} tenemos bastante disponibilidad para {servicio['nombre']} "
                 f"con {nombres_str}, tanto por la mañana como por la tarde. "
-                f"¿Tienes preferencia de horario o de estilista?"
+                f"¿Qué te viene mejor, mañana o tarde? ¿Tienes preferencia de estilista?"
             )
-        elif total_huecos > 6 and hay_manana and not hay_tarde:
+        elif alguno_tiene_mas and hay_manana and not hay_tarde:
             msg_voz = (
                 f"El {fecha_legible} para {servicio['nombre']} solo queda hueco por la mañana, "
-                f"con {nombres_str}. ¿Tienes preferencia de estilista?"
+                f"con {nombres_str}. ¿Tienes preferencia de estilista o te digo las horas?"
             )
-        elif total_huecos > 6 and not hay_manana and hay_tarde:
+        elif alguno_tiene_mas and not hay_manana and hay_tarde:
             msg_voz = (
                 f"El {fecha_legible} para {servicio['nombre']} solo queda hueco por la tarde, "
-                f"con {nombres_str}. ¿Tienes preferencia de estilista?"
+                f"con {nombres_str}. ¿Tienes preferencia de estilista o te digo las horas?"
             )
         else:
             # Pocas opciones → listar directamente pero máximo 2 estilistas
