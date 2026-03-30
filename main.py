@@ -505,6 +505,13 @@ def obtener_citas_estilista(conn, estilista_id: str, fecha: date) -> list:
     )
 
 
+def obtener_ids_confirmadas_dia(conn, fecha: date) -> set:
+    """Obtiene todos los IDs de citas confirmadas para un día (todos los estilistas).
+    Se usa para filtrar eventos huérfanos de Google Calendar."""
+    rows = _query(conn, "SELECT id FROM citas WHERE fecha = ? AND estado = 'confirmada'", (fecha.isoformat(),))
+    return {r["id"] for r in rows}
+
+
 def _parse_time(val) -> time:
     """Convierte un valor a time: acepta str 'HH:MM' y objetos time (PostgreSQL)."""
     if isinstance(val, time):
@@ -535,7 +542,7 @@ def calcular_hora_fin(hora_inicio_str: str, duracion_min: int) -> str:
     return fin.strftime("%H:%M")
 
 
-def gcal_bloques_estilista(estilista_id: str, fecha: date) -> list:
+def gcal_bloques_estilista(estilista_id: str, fecha: date, citas_confirmadas_ids: set = None) -> list:
     """
     Lee Google Calendar y devuelve los bloques ocupados para un estilista en una fecha.
     Un evento bloquea a un estilista si:
@@ -543,6 +550,9 @@ def gcal_bloques_estilista(estilista_id: str, fecha: date) -> list:
       - su nombre aparece en el título del evento, O
       - el evento no tiene estilista identificable (bloqueo de salón en general).
     Eventos de OTRO estilista concreto se ignoran.
+
+    Si citas_confirmadas_ids se proporciona, los eventos con empresa_sl_cita_id que NO están
+    en ese set se ignoran (son eventos huérfanos de deploys anteriores).
     """
     if not calendar_service.enabled:
         return []
@@ -567,11 +577,23 @@ def gcal_bloques_estilista(estilista_id: str, fecha: date) -> list:
 
         ext = ev.get("extendedProperties", {}).get("private", {})
         ev_est_id = ext.get("estilista_id", "")
+        ev_cita_id = ext.get("empresa_sl_cita_id", "")
         titulo = ev.get("summary", "").lower()
 
         # Si el evento es explícitamente de otro estilista, ignorarlo
         if ev_est_id and ev_est_id != estilista_id:
             continue
+
+        # Si el evento fue creado por nuestro sistema (tiene cita_id) pero esa cita
+        # ya no existe como confirmada en la BD, es un evento huérfano → ignorarlo
+        if ev_cita_id and citas_confirmadas_ids is not None:
+            try:
+                if int(ev_cita_id) not in citas_confirmadas_ids:
+                    logger.info(f"⏭️ Ignorando evento huérfano de Calendar: cita_id={ev_cita_id}, título={ev.get('summary', '')}")
+                    continue
+            except (ValueError, TypeError):
+                pass
+
         # Si el título menciona a otro estilista (pero no al nuestro), ignorarlo
         if not ev_est_id:
             otro_en_titulo = any(n in titulo for n in otros_nombres)
@@ -587,7 +609,7 @@ def gcal_bloques_estilista(estilista_id: str, fecha: date) -> list:
     return bloques
 
 
-def encontrar_huecos_libres(conn, estilista_id: str, fecha: date, duracion_min: int) -> list:
+def encontrar_huecos_libres(conn, estilista_id: str, fecha: date, duracion_min: int, _ids_confirmadas: set = None) -> list:
     """Encuentra todos los huecos disponibles para un estilista en una fecha.
     Combina citas de la BD con eventos de Google Calendar."""
     horario = salon_abierto(fecha)
@@ -602,9 +624,13 @@ def encontrar_huecos_libres(conn, estilista_id: str, fecha: date, duracion_min: 
     abre = datetime.strptime(horario["abre"], "%H:%M")
     cierra = datetime.strptime(horario["cierra"], "%H:%M")
 
+    # Obtener IDs confirmadas del día para filtrar eventos huérfanos de Calendar
+    if _ids_confirmadas is None:
+        _ids_confirmadas = obtener_ids_confirmadas_dia(conn, fecha)
+
     # Combinar citas de BD + bloques de Google Calendar
     citas_bd = obtener_citas_estilista(conn, estilista_id, fecha)
-    bloques_gcal = gcal_bloques_estilista(estilista_id, fecha)
+    bloques_gcal = gcal_bloques_estilista(estilista_id, fecha, _ids_confirmadas)
     # Normalizar bloques de Calendar al mismo formato que citas de BD
     citas_gcal = [
         {"hora_inicio": b["hora_inicio"], "hora_fin": b["hora_fin"]}
@@ -633,6 +659,7 @@ def buscar_mejor_estilista(conn, servicio_id: str, fecha: date, hora_str: str, d
     hora_inicio = datetime.strptime(hora_str, "%H:%M").time()
     hora_fin_str = calcular_hora_fin(hora_str, duracion_min)
     hora_fin = datetime.strptime(hora_fin_str, "%H:%M").time()
+    ids_confirmadas = obtener_ids_confirmadas_dia(conn, fecha)
 
     for estilista in ESTILISTAS:
         if not estilista_hace_servicio(estilista, servicio_id):
@@ -641,7 +668,7 @@ def buscar_mejor_estilista(conn, servicio_id: str, fecha: date, hora_str: str, d
             continue
 
         citas_bd = obtener_citas_estilista(conn, estilista["id"], fecha)
-        bloques_gcal = gcal_bloques_estilista(estilista["id"], fecha)
+        bloques_gcal = gcal_bloques_estilista(estilista["id"], fecha, ids_confirmadas)
         citas_gcal = [{"hora_inicio": b["hora_inicio"], "hora_fin": b["hora_fin"]} for b in bloques_gcal]
         todas = citas_bd + citas_gcal
 
@@ -868,6 +895,9 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             }
         estilistas_validos = [est]
 
+    # IDs confirmadas del día para filtrar eventos huérfanos de Calendar
+    ids_confirmadas = obtener_ids_confirmadas_dia(conn, fecha_dt)
+
     # Normalizar hora_preferida ANTES del bucle para poder comparar contra todos los huecos
     hora_pref_pre = ""
     if hora_preferida:
@@ -877,7 +907,7 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
             hora_pref_pre = ""
 
     for est in estilistas_validos:
-        huecos = encontrar_huecos_libres(conn, est["id"], fecha_dt, servicio["duracion_min"])
+        huecos = encontrar_huecos_libres(conn, est["id"], fecha_dt, servicio["duracion_min"], ids_confirmadas)
 
         # Filtrar huecos pasados si es hoy
         if fecha_dt == ahora.date():
@@ -976,10 +1006,16 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
     # Usamos tiene_hora_exacta calculado contra TODOS los huecos (no solo la muestra)
     hora_exacta_disponible = any(datos.get("tiene_hora_exacta") for datos in resultado.values())
 
-    # Generar mensaje_voz natural
+    # ── Generar mensaje_voz natural para Retell ──
+    nombres_estilistas = list(resultado.keys())
+    num_est = len(nombres_estilistas)
+
+    # Recopilar info resumida
+    todos_huecos_legibles = []  # lista plana de horas legibles (sin repetir)
     partes_voz = []
     for nombre_est, datos in resultado.items():
         legibles = datos["huecos_legibles"]
+        todos_huecos_legibles.extend(legibles)
         if len(legibles) == 1:
             partes_voz.append(f"con {nombre_est} a {legibles[0]}")
         elif len(legibles) == 2:
@@ -987,38 +1023,106 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
         else:
             partes_voz.append(f"con {nombre_est} a {', '.join(legibles[:-1])} o {legibles[-1]}")
 
+    # Detectar si hay huecos de mañana y tarde para preguntar preferencia
+    hay_manana = any(
+        any(h < "13:00" for h in datos["huecos_disponibles"])
+        for datos in resultado.values()
+    )
+    hay_tarde = any(
+        any(h >= "13:00" for h in datos["huecos_disponibles"])
+        for datos in resultado.values()
+    )
+
     if hora_pref_norm and hora_exacta_disponible:
-        # Hora pedida exacta SÍ disponible → confirmar directamente, sin dar más opciones
+        # ── Hora pedida exacta SÍ disponible → confirmar directamente ──
         hora_pref_legible = hora_a_texto(hora_pref_norm)
-        # ¿Con qué estilistas está disponible esa hora?
         estilistas_con_hora = [
             nombre for nombre, datos in resultado.items()
             if hora_pref_norm in datos["huecos_disponibles"]
         ]
         if len(estilistas_con_hora) == 1:
             msg_voz = (
-                f"Sí, tengo disponible {hora_pref_legible} el {fecha_legible} con {estilistas_con_hora[0]}. "
-                f"¿Te lo confirmo?"
+                f"Perfecto, tengo hueco a {hora_pref_legible} el {fecha_legible} "
+                f"con {estilistas_con_hora[0]}. ¿Te lo reservo?"
             )
         else:
-            estilistas_str = " o ".join(estilistas_con_hora)
+            estilistas_str = " o con ".join(estilistas_con_hora)
             msg_voz = (
-                f"Sí, tengo {hora_pref_legible} el {fecha_legible} con {estilistas_str}. "
-                f"¿Con quién te lo confirmo?"
+                f"Tengo {hora_pref_legible} el {fecha_legible} disponible "
+                f"con {estilistas_str}. ¿Con quién lo prefieres?"
             )
+
     elif hora_pref_norm and not hora_exacta_disponible:
-        # Hora concreta pedida pero NO disponible → mensaje jerárquico
+        # ── Hora pedida pero NO disponible → sugerir cercanas ──
         hora_pref_legible = hora_a_texto(hora_pref_norm)
-        alternativas_str = "; ".join(partes_voz)
-        msg_voz = (
-            f"Lo siento, {hora_pref_legible} el {fecha_legible} no está disponible para {servicio['nombre']}. "
-            f"Ese mismo día tengo: {alternativas_str}. "
-            f"¿Te viene bien alguna de estas opciones, o prefieres otro día?"
-        )
-    elif len(partes_voz) == 1:
-        msg_voz = f"Para {servicio['nombre']} el {fecha_legible} tengo {partes_voz[0]}. ¿Te viene bien?"
+        if num_est == 1:
+            datos_unico = list(resultado.values())[0]
+            legibles = datos_unico["huecos_legibles"]
+            opciones = " o a ".join(legibles)
+            msg_voz = (
+                f"Uy, a {hora_pref_legible} no queda hueco. "
+                f"Lo más cercano con {nombres_estilistas[0]} sería a {opciones}. "
+                f"¿Te viene bien?"
+            )
+        else:
+            # Coger las 2 opciones más cercanas de cualquier estilista
+            msg_voz = (
+                f"A {hora_pref_legible} no tengo hueco para {servicio['nombre']}. "
+                f"Ese día tengo: {'; '.join(partes_voz[:2])}. "
+                f"¿Alguna de estas te viene bien?"
+            )
+
+    elif num_est == 1:
+        # ── Un solo estilista con disponibilidad ──
+        datos_unico = list(resultado.values())[0]
+        legibles = datos_unico["huecos_legibles"]
+        hay_mas = datos_unico["hay_mas_opciones"]
+        if len(legibles) == 1:
+            msg_voz = (
+                f"Para {servicio['nombre']} el {fecha_legible}, "
+                f"tengo un hueco a {legibles[0]} con {nombres_estilistas[0]}. ¿Te va bien?"
+            )
+        elif hay_mas and hay_manana and hay_tarde:
+            msg_voz = (
+                f"Para {servicio['nombre']} el {fecha_legible} con {nombres_estilistas[0]} "
+                f"tengo huecos tanto por la mañana como por la tarde. "
+                f"¿Qué te viene mejor, mañana o tarde?"
+            )
+        else:
+            opciones = ", ".join(legibles[:-1]) + " o " + legibles[-1]
+            msg_voz = (
+                f"Para {servicio['nombre']} el {fecha_legible} con {nombres_estilistas[0]} "
+                f"tengo a {opciones}. ¿Cuál prefieres?"
+            )
+
     else:
-        msg_voz = f"Para {servicio['nombre']} el {fecha_legible} tengo: {'; '.join(partes_voz)}. ¿Con quién y a qué hora te viene mejor?"
+        # ── Múltiples estilistas con disponibilidad ──
+        total_huecos = sum(len(d["huecos_disponibles"]) for d in resultado.values())
+        nombres_str = ", ".join(nombres_estilistas[:-1]) + " y " + nombres_estilistas[-1]
+
+        if total_huecos > 6 and hay_manana and hay_tarde:
+            # Muchas opciones → preguntar preferencia primero
+            msg_voz = (
+                f"El {fecha_legible} tenemos disponibilidad para {servicio['nombre']} "
+                f"con {nombres_str}, tanto por la mañana como por la tarde. "
+                f"¿Tienes preferencia de horario o de estilista?"
+            )
+        elif total_huecos > 6 and hay_manana and not hay_tarde:
+            msg_voz = (
+                f"El {fecha_legible} para {servicio['nombre']} solo queda hueco por la mañana, "
+                f"con {nombres_str}. ¿Tienes preferencia de estilista?"
+            )
+        elif total_huecos > 6 and not hay_manana and hay_tarde:
+            msg_voz = (
+                f"El {fecha_legible} para {servicio['nombre']} solo queda hueco por la tarde, "
+                f"con {nombres_str}. ¿Tienes preferencia de estilista?"
+            )
+        else:
+            # Pocas opciones → listar directamente pero máximo 2 estilistas
+            msg_voz = (
+                f"Para {servicio['nombre']} el {fecha_legible} tengo: "
+                f"{'. '.join(partes_voz[:2])}. ¿Cuál te viene mejor?"
+            )
 
     return {
         "disponible": True,
@@ -1119,8 +1223,9 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         raise HTTPException(400, f"{estilista['nombre']} no realiza '{servicio['nombre']}'. Sus servicios: {', '.join(servicios_est)}.")
 
     # Comprobar conflictos con buffer (BD + Google Calendar)
+    ids_confirmadas = obtener_ids_confirmadas_dia(conn, fecha_dt)
     citas_bd = obtener_citas_estilista(conn, estilista["id"], fecha_dt)
-    bloques_gcal = gcal_bloques_estilista(estilista["id"], fecha_dt)
+    bloques_gcal = gcal_bloques_estilista(estilista["id"], fecha_dt, ids_confirmadas)
     citas_gcal = [{"hora_inicio": b["hora_inicio"], "hora_fin": b["hora_fin"]} for b in bloques_gcal]
     citas = citas_bd + citas_gcal
     buffer = SALON_CONFIG["buffer_minutos"]
@@ -1610,6 +1715,7 @@ def proximos_dias_disponibles(
         est = obtener_estilista(estilista_id)
         estilistas_base = [est] if est and estilista_hace_servicio(est, servicio_id) else []
 
+    _ids_cache_pd = {}
     for i in range(dias):
         fecha = hoy + timedelta(days=i)
         if not salon_abierto(fecha):
@@ -1619,9 +1725,12 @@ def proximos_dias_disponibles(
         if not estilistas_validos:
             continue
 
+        if fecha not in _ids_cache_pd:
+            _ids_cache_pd[fecha] = obtener_ids_confirmadas_dia(conn, fecha)
+
         huecos_dia = {}
         for est in estilistas_validos:
-            huecos = encontrar_huecos_libres(conn, est["id"], fecha, servicio["duracion_min"])
+            huecos = encontrar_huecos_libres(conn, est["id"], fecha, servicio["duracion_min"], _ids_cache_pd[fecha])
 
             # Filtrar horas pasadas si es hoy
             if fecha == hoy:
@@ -1786,16 +1895,20 @@ def _siguiente_hueco(servicio_id: str, estilista_id: str = "cualquiera", dias_ma
     dias_es = ["lunes","martes","miércoles","jueves","viernes","sábado","domingo"]
     meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
 
+    _ids_cache = {}  # cache de ids confirmadas por fecha para no repetir queries
     for i in range(dias_max):
         fecha = hoy + timedelta(days=i)
         if not salon_abierto(fecha):
             continue
 
+        if fecha not in _ids_cache:
+            _ids_cache[fecha] = obtener_ids_confirmadas_dia(conn, fecha)
+
         for est in estilistas_base:
             if not estilista_trabaja(est, fecha):
                 continue
 
-            huecos = encontrar_huecos_libres(conn, est["id"], fecha, servicio["duracion_min"])
+            huecos = encontrar_huecos_libres(conn, est["id"], fecha, servicio["duracion_min"], _ids_cache[fecha])
 
             if fecha == hoy:
                 hora_minima = (ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])).strftime("%H:%M")
@@ -1863,6 +1976,52 @@ def debug_calendar_events(fecha: str = Query(default="hoy")):
         "total_eventos": len(eventos),
         "eventos": eventos,
         "bloques_por_estilista": bloques_por_estilista,
+    }
+
+
+@app.post("/debug/limpiar-huerfanos", summary="[DEBUG] Eliminar eventos huérfanos del Calendar")
+def limpiar_eventos_huerfanos(fecha_inicio: str = Query(default="hoy"), dias: int = Query(default=30)):
+    """Elimina eventos de Google Calendar cuyo empresa_sl_cita_id no existe como confirmada en la BD."""
+    if not calendar_service.enabled:
+        return {"error": "Google Calendar no habilitado"}
+
+    try:
+        inicio = parsear_fecha(fecha_inicio)
+    except ValueError:
+        raise HTTPException(400, f"No entendí la fecha: {fecha_inicio}")
+
+    conn = get_db()
+    eliminados = []
+
+    for i in range(dias):
+        fecha = inicio + timedelta(days=i)
+        ids_confirmadas = obtener_ids_confirmadas_dia(conn, fecha)
+        eventos = calendar_service.obtener_eventos_dia(fecha.isoformat())
+
+        for ev in eventos:
+            ext = ev.get("extendedProperties", {}).get("private", {})
+            ev_cita_id = ext.get("empresa_sl_cita_id", "")
+            if not ev_cita_id:
+                continue  # No es un evento de nuestro sistema
+            try:
+                if int(ev_cita_id) not in ids_confirmadas:
+                    # Evento huérfano → eliminar
+                    event_id = ev.get("id")
+                    if event_id:
+                        calendar_service.cancelar_evento(event_id)
+                        eliminados.append({
+                            "fecha": fecha.isoformat(),
+                            "summary": ev.get("summary", ""),
+                            "cita_id": ev_cita_id,
+                            "google_event_id": event_id,
+                        })
+            except (ValueError, TypeError):
+                pass
+
+    conn.close()
+    return {
+        "eliminados": len(eliminados),
+        "detalle": eliminados,
     }
 
 
