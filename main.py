@@ -1116,49 +1116,39 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
         nombres_str = ", ".join(nombres_estilistas[:-1]) + " y " + nombres_estilistas[-1]
 
         if alguno_tiene_mas and hay_manana and hay_tarde:
-            # Desglosar por estilista + franja para que el LLM tenga toda la info
-            detalle_partes = []
-            for nombre_est, datos in resultado.items():
-                m_leg = datos["huecos_manana_legibles"]
-                t_leg = datos["huecos_tarde_legibles"]
-                partes_est = []
-                if m_leg:
-                    m_str = ", ".join(m_leg[:-1]) + " o " + m_leg[-1] if len(m_leg) > 1 else m_leg[0]
-                    partes_est.append(f"por la mañana a {m_str}")
-                if t_leg:
-                    t_str = ", ".join(t_leg[:-1]) + " o " + t_leg[-1] if len(t_leg) > 1 else t_leg[0]
-                    partes_est.append(f"por la tarde a {t_str}")
-                if partes_est:
-                    detalle_partes.append(f"con {nombre_est} {', y '.join(partes_est)}")
-
+            # Muchas opciones → preguntar preferencia en vez de listar todo
+            nombres_str_detalle = ", ".join(nombres_estilistas[:-1]) + " y " + nombres_estilistas[-1] if len(nombres_estilistas) > 1 else nombres_estilistas[0]
             msg_voz = (
-                f"El {fecha_legible} tenemos disponibilidad para {servicio['nombre']}: "
-                f"{'; '.join(detalle_partes)}. "
-                f"¿Qué te viene mejor?"
+                f"El {fecha_legible} tenemos bastante disponibilidad para {servicio['nombre']} "
+                f"tanto por la mañana como por la tarde, con {nombres_str_detalle}. "
+                f"¿Prefieres por la mañana o por la tarde?"
             )
         elif alguno_tiene_mas and hay_manana and not hay_tarde:
-            # Solo mañana — listar horas de mañana por estilista
-            detalle_partes = []
-            for nombre_est, datos in resultado.items():
-                m_leg = datos["huecos_manana_legibles"]
-                if m_leg:
-                    m_str = ", ".join(m_leg[:-1]) + " o " + m_leg[-1] if len(m_leg) > 1 else m_leg[0]
-                    detalle_partes.append(f"con {nombre_est} a {m_str}")
+            # Solo mañana pero muchas opciones → resumir
+            nombres_str_detalle = ", ".join(nombres_estilistas[:-1]) + " y " + nombres_estilistas[-1] if len(nombres_estilistas) > 1 else nombres_estilistas[0]
+            # Dar solo primer y último hueco como rango
+            todas_manana = sorted(set(h for datos in resultado.values() for h in datos["huecos_manana"][:2]))
+            if len(todas_manana) >= 2:
+                rango = f"desde {hora_a_texto(todas_manana[0])} hasta {hora_a_texto(todas_manana[-1])}"
+            else:
+                rango = f"a {hora_a_texto(todas_manana[0])}" if todas_manana else "por la mañana"
             msg_voz = (
-                f"El {fecha_legible} para {servicio['nombre']} solo queda hueco por la mañana: "
-                f"{'; '.join(detalle_partes)}. ¿Cuál te viene mejor?"
+                f"El {fecha_legible} para {servicio['nombre']} tenemos hueco por la mañana "
+                f"{rango}, con {nombres_str_detalle}. "
+                f"¿Tienes preferencia de hora o de estilista?"
             )
         elif alguno_tiene_mas and not hay_manana and hay_tarde:
-            # Solo tarde — listar horas de tarde por estilista
-            detalle_partes = []
-            for nombre_est, datos in resultado.items():
-                t_leg = datos["huecos_tarde_legibles"]
-                if t_leg:
-                    t_str = ", ".join(t_leg[:-1]) + " o " + t_leg[-1] if len(t_leg) > 1 else t_leg[0]
-                    detalle_partes.append(f"con {nombre_est} a {t_str}")
+            # Solo tarde pero muchas opciones → resumir
+            nombres_str_detalle = ", ".join(nombres_estilistas[:-1]) + " y " + nombres_estilistas[-1] if len(nombres_estilistas) > 1 else nombres_estilistas[0]
+            todas_tarde = sorted(set(h for datos in resultado.values() for h in datos["huecos_tarde"][:2]))
+            if len(todas_tarde) >= 2:
+                rango = f"desde {hora_a_texto(todas_tarde[0])} hasta {hora_a_texto(todas_tarde[-1])}"
+            else:
+                rango = f"a {hora_a_texto(todas_tarde[0])}" if todas_tarde else "por la tarde"
             msg_voz = (
-                f"El {fecha_legible} para {servicio['nombre']} solo queda hueco por la tarde: "
-                f"{'; '.join(detalle_partes)}. ¿Cuál te viene mejor?"
+                f"El {fecha_legible} para {servicio['nombre']} tenemos hueco por la tarde "
+                f"{rango}, con {nombres_str_detalle}. "
+                f"¿Tienes preferencia de hora o de estilista?"
             )
         else:
             # Pocas opciones → listar directamente pero máximo 2 estilistas
@@ -1186,36 +1176,37 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
 def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
     """Crea una nueva cita validando disponibilidad, buffer, horario y conflictos."""
 
+    # Helper para devolver errores en formato que Retell puede leer
+    def _error_cita(msg_voz: str):
+        return {"exito": False, "mensaje_voz": msg_voz}
+
     # Validar que el nombre parece un nombre real (evitar que Retell pase "Sí", "No", "Ok"...)
     _NOMBRES_INVALIDOS = {"sí", "si", "no", "ok", "vale", "bueno", "claro", "hola", "adiós", "gracias", "perfecto", "bien"}
     nombre_limpio = req.cliente_nombre.strip()
     if nombre_limpio.lower() in _NOMBRES_INVALIDOS or len(nombre_limpio) < 3:
-        raise HTTPException(
-            400,
-            f"'{nombre_limpio}' no parece un nombre válido. ¿Podrías preguntarle al cliente su nombre completo?"
-        )
+        return _error_cita("No he pillado bien el nombre. ¿Me lo puedes repetir, por favor?")
 
     servicio = obtener_servicio(req.servicio_id)
     if not servicio:
-        raise HTTPException(404, f"Servicio '{req.servicio_id}' no encontrado.")
+        return _error_cita(f"No he encontrado el servicio '{req.servicio_id}'. ¿Puedes repetirme qué servicio necesitas?")
     servicio_id_canon = servicio["id"]  # normalizar al ID canónico
 
     try:
         fecha_dt = parsear_fecha(req.fecha)
     except ValueError:
-        raise HTTPException(400, f"No entendí la fecha '{req.fecha}'.")
+        return _error_cita(f"No he entendido bien la fecha. ¿Me la puedes repetir?")
 
     # Validar que el salón está abierto
     horario = salon_abierto(fecha_dt)
     if not horario:
-        raise HTTPException(400, f"El salón está cerrado los {dia_en_plural(fecha_dt)}.")
+        return _error_cita(f"Lo siento, los {dia_en_plural(fecha_dt)} el salón está cerrado. ¿Probamos otro día?")
 
     # Normalizar hora: "9" → "09:00", "9:00" → "09:00", "2 de la tarde" → "14:00"
     try:
         hora_norm = normalizar_hora(req.hora)
         hora_inicio = datetime.strptime(hora_norm, "%H:%M").time()
     except (ValueError, AttributeError):
-        raise HTTPException(400, f"Formato de hora inválido: '{req.hora}'.")
+        return _error_cita("No he entendido bien la hora. ¿Me la puedes repetir?")
 
     hora_fin_str = calcular_hora_fin(hora_norm, servicio["duracion_min"])
     hora_fin = datetime.strptime(hora_fin_str, "%H:%M").time()
@@ -1224,14 +1215,14 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
     hora_cierra = datetime.strptime(horario["cierra"], "%H:%M").time()
 
     if hora_inicio < hora_abre or hora_fin > hora_cierra:
-        raise HTTPException(400, f"El horario del salón es de {horario['abre']} a {horario['cierra']}. El servicio terminaría a las {hora_fin_str}, que está fuera de horario.")
+        return _error_cita(f"Esa hora queda fuera de nuestro horario. Abrimos de {hora_a_texto(horario['abre'])} a {hora_a_texto(horario['cierra'])}. ¿Te busco otra hora?")
 
     # Validar antelación mínima
     ahora = ahora_madrid()
     fecha_hora_cita = datetime.combine(fecha_dt, hora_inicio, tzinfo=TZ)
     minimo = ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])
     if fecha_hora_cita < minimo:
-        raise HTTPException(400, f"Las citas deben reservarse con al menos {SALON_CONFIG['antelacion_minima_horas']} horas de antelación.")
+        return _error_cita(f"Las citas necesitan al menos {SALON_CONFIG['antelacion_minima_horas']} horas de antelación. ¿Probamos con otra hora o día?")
 
     conn = get_db()
 
@@ -1255,24 +1246,25 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
         estilista = buscar_mejor_estilista(conn, servicio_id_canon, fecha_dt, hora_norm, servicio["duracion_min"])
         if not estilista:
             conn.close()
-            raise HTTPException(409, "No hay estilistas disponibles para ese servicio, fecha y hora.")
+            return _error_cita("Lo siento, no hay ningún estilista disponible para ese servicio en esa fecha y hora. ¿Probamos con otro horario?")
     else:
         estilista = _resolver_estilista_id(req.estilista_id)
         if not estilista:
             conn.close()
-            raise HTTPException(404, f"Estilista '{req.estilista_id}' no encontrado.")
+            return _error_cita(f"No encuentro al estilista '{req.estilista_id}'. ¿Puedes repetirme el nombre?")
 
     # Validar que el estilista trabaja ese día
     if not estilista_trabaja(estilista, fecha_dt):
         dias = [DIAS_SEMANA_ES[d] for d in estilista["dias_trabaja"]]
         conn.close()
-        raise HTTPException(400, f"{estilista['nombre']} no trabaja los {dia_en_plural(fecha_dt)}. Trabaja: {', '.join(dias)}.")
+        return _error_cita(f"{estilista['nombre']} no trabaja los {dia_en_plural(fecha_dt)}. ¿Quieres que busque otro estilista o probamos otro día?")
 
     # Validar que el estilista hace ese servicio
     if not estilista_hace_servicio(estilista, servicio_id_canon):
-        servicios_est = [obtener_servicio(s)["nombre"] for s in estilista["especialidades"]]
+        otros = [e["nombre"] for e in ESTILISTAS if estilista_hace_servicio(e, servicio_id_canon)]
+        otros_str = " o ".join(otros) if otros else "ninguno disponible"
         conn.close()
-        raise HTTPException(400, f"{estilista['nombre']} no realiza '{servicio['nombre']}'. Sus servicios: {', '.join(servicios_est)}.")
+        return _error_cita(f"{estilista['nombre']} no hace {servicio['nombre']}. Para ese servicio puedes ir con {otros_str}. ¿Cuál prefieres?")
 
     # Comprobar conflictos con buffer (BD + Google Calendar)
     ids_confirmadas = obtener_ids_confirmadas_dia(conn, fecha_dt)
