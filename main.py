@@ -1143,6 +1143,15 @@ def _consultar_disponibilidad(fecha: str, servicio_id: str, estilista_id: str = 
 def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
     """Crea una nueva cita validando disponibilidad, buffer, horario y conflictos."""
 
+    # Validar que el nombre parece un nombre real (evitar que Retell pase "Sí", "No", "Ok"...)
+    _NOMBRES_INVALIDOS = {"sí", "si", "no", "ok", "vale", "bueno", "claro", "hola", "adiós", "gracias", "perfecto", "bien"}
+    nombre_limpio = req.cliente_nombre.strip()
+    if nombre_limpio.lower() in _NOMBRES_INVALIDOS or len(nombre_limpio) < 3:
+        raise HTTPException(
+            400,
+            f"'{nombre_limpio}' no parece un nombre válido. ¿Podrías preguntarle al cliente su nombre completo?"
+        )
+
     servicio = obtener_servicio(req.servicio_id)
     if not servicio:
         raise HTTPException(404, f"Servicio '{req.servicio_id}' no encontrado.")
