@@ -1824,6 +1824,48 @@ def _siguiente_hueco(servicio_id: str, estilista_id: str = "cualquiera", dias_ma
     }
 
 
+# --- DIAGNÓSTICO CALENDAR (temporal) ---
+
+@app.get("/debug/calendar-events", summary="[DEBUG] Ver eventos del calendario en una fecha")
+def debug_calendar_events(fecha: str = Query(default="hoy")):
+    """Endpoint temporal para diagnosticar qué eventos hay en Google Calendar."""
+    try:
+        fecha_dt = parsear_fecha(fecha)
+    except ValueError:
+        raise HTTPException(400, f"No entendí la fecha: {fecha}")
+
+    if not calendar_service.enabled:
+        return {"error": "Google Calendar no está habilitado"}
+
+    eventos_raw = calendar_service.obtener_eventos_dia(fecha_dt.isoformat())
+
+    eventos = []
+    for ev in eventos_raw:
+        ext = ev.get("extendedProperties", {}).get("private", {})
+        eventos.append({
+            "summary": ev.get("summary", "(sin título)"),
+            "start": ev.get("start", {}),
+            "end": ev.get("end", {}),
+            "estilista_id_en_props": ext.get("estilista_id", ""),
+            "servicio_id_en_props": ext.get("servicio_id", ""),
+            "cita_id_en_props": ext.get("empresa_sl_cita_id", ""),
+            "tiene_extended_props": bool(ext),
+        })
+
+    # Mostrar cómo afecta a cada estilista
+    bloques_por_estilista = {}
+    for est in ESTILISTAS:
+        bloques = gcal_bloques_estilista(est["id"], fecha_dt)
+        bloques_por_estilista[est["nombre"]] = bloques
+
+    return {
+        "fecha": fecha_dt.isoformat(),
+        "total_eventos": len(eventos),
+        "eventos": eventos,
+        "bloques_por_estilista": bloques_por_estilista,
+    }
+
+
 # ═══════════════════════════════════════════════════════════════
 # EJECUTAR
 # ═══════════════════════════════════════════════════════════════

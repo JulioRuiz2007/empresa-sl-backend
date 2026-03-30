@@ -226,8 +226,18 @@ class GoogleCalendarService:
             return []
 
         try:
-            time_min = f"{fecha}T00:00:00+01:00"
-            time_max = f"{fecha}T23:59:59+01:00"
+            # Calcular offset dinámico para Europe/Madrid (CET +01:00 / CEST +02:00)
+            from zoneinfo import ZoneInfo
+            from datetime import timezone as _tz
+            _madrid = ZoneInfo(TIMEZONE)
+            _dt_local = datetime.combine(date.fromisoformat(fecha), time(0, 0), tzinfo=_madrid)
+            _offset = _dt_local.utcoffset()
+            _offset_h = int(_offset.total_seconds() // 3600)
+            _offset_m = int((_offset.total_seconds() % 3600) // 60)
+            offset_str = f"{_offset_h:+03d}:{_offset_m:02d}"
+
+            time_min = f"{fecha}T00:00:00{offset_str}"
+            time_max = f"{fecha}T23:59:59{offset_str}"
 
             result = self.service.events().list(
                 calendarId=CALENDAR_ID,
