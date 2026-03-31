@@ -303,7 +303,7 @@ def init_db():
 
 class CrearCitaRequest(BaseModel):
     cliente_nombre: str = Field(..., min_length=2, description="Nombre completo del cliente")
-    cliente_telefono: str = Field(..., min_length=9, description="Teléfono del cliente")
+    cliente_telefono: str = Field(default="", description="Teléfono del cliente")
     cliente_nuevo: bool = Field(default=True, description="¿Es su primera visita?")
     servicio_id: str = Field(..., description="ID del servicio (corte, coloracion, brushing, unas, facial, depilacion)")
     estilista_id: str = Field(..., description="ID del estilista (maria, lucia, carmen) o 'cualquiera'")
@@ -322,7 +322,7 @@ class ModificarCitaRequest(BaseModel):
 
 class CrearComboRequest(BaseModel):
     cliente_nombre: str = Field(..., min_length=2, description="Nombre completo del cliente")
-    cliente_telefono: str = Field(..., min_length=9, description="Teléfono del cliente")
+    cliente_telefono: str = Field(default="", description="Teléfono del cliente")
     cliente_nuevo: bool = Field(default=True, description="¿Es su primera visita?")
     servicios: List[str] = Field(..., min_items=1, description="Lista de IDs de servicios en orden (ej: ['corte', 'unas'])")
     estilista_id: str = Field(default="cualquiera", description="ID del estilista o 'cualquiera'")
@@ -1186,6 +1186,11 @@ def crear_cita(req: CrearCitaRequest, background_tasks: BackgroundTasks):
     if nombre_limpio.lower() in _NOMBRES_INVALIDOS or len(nombre_limpio) < 3:
         return _error_cita("No he pillado bien el nombre. ¿Me lo puedes repetir, por favor?")
 
+    # Validar teléfono: debe tener al menos 9 dígitos
+    telefono_digitos = "".join(c for c in req.cliente_telefono if c.isdigit())
+    if len(telefono_digitos) < 9:
+        return _error_cita("Ese número de teléfono no parece completo. Necesito los 9 dígitos. ¿Me lo puedes repetir?")
+
     servicio = obtener_servicio(req.servicio_id)
     if not servicio:
         return _error_cita(f"No he encontrado el servicio '{req.servicio_id}'. ¿Puedes repetirme qué servicio necesitas?")
@@ -1594,12 +1599,20 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
     Los servicios se encadenan automáticamente añadiendo el buffer entre cada uno.
     Se puede asignar el mismo o distintos estilistas según disponibilidad.
     """
+    def _error_combo(msg_voz: str):
+        return {"exito": False, "mensaje_voz": msg_voz}
+
+    # Validar teléfono
+    telefono_digitos = "".join(c for c in req.cliente_telefono if c.isdigit())
+    if len(telefono_digitos) < 9:
+        return _error_combo("Ese número de teléfono no parece completo. Necesito los 9 dígitos. ¿Me lo puedes repetir?")
+
     # Validar todos los servicios
     servicios_objs = []
     for sid in req.servicios:
         s = obtener_servicio(sid)
         if not s:
-            raise HTTPException(404, f"Servicio '{sid}' no encontrado. Servicios válidos: {[sv['id'] for sv in SERVICIOS]}")
+            return _error_combo(f"No he encontrado el servicio '{sid}'. ¿Puedes repetirme qué servicio necesitas?")
         servicios_objs.append(s)
 
     try:
