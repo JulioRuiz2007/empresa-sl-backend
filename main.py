@@ -1962,6 +1962,175 @@ def siguiente_hueco_post(req: SiguienteHuecoRequest):
     return _siguiente_hueco(req.servicio_id, req.estilista_id, req.dias_max)
 
 
+# --- SIGUIENTE HUECO PARA COMBO (múltiples servicios seguidos) ---
+
+class SiguienteHuecoComboRequest(BaseModel):
+    servicios: list = Field(..., description="Lista de IDs de servicios en orden, ej: ['corte', 'coloracion', 'facial']")
+    estilista_id: str = Field(default="cualquiera", description="ID del estilista o 'cualquiera'")
+    dias_max: int = Field(default=14, ge=1, le=30)
+
+
+@app.post("/disponibilidad/siguiente-hueco-combo", summary="Primer hueco disponible para un combo de servicios seguidos")
+def siguiente_hueco_combo(req: SiguienteHuecoComboRequest):
+    """
+    Busca el primer día y hora en que TODOS los servicios del combo puedan realizarse
+    seguidos (back-to-back) con un mismo estilista o con 'cualquiera'.
+    """
+    # Validar y resolver servicios
+    servicios_objs = []
+    for sid in req.servicios:
+        s = obtener_servicio(sid)
+        if not s:
+            return {
+                "disponible": False,
+                "mensaje_voz": f"No he encontrado el servicio '{sid}'. ¿Puedes repetirme los servicios?",
+            }
+        servicios_objs.append(s)
+
+    if not servicios_objs:
+        return {"disponible": False, "mensaje_voz": "No me has dicho qué servicios quieres. ¿Me los repites?"}
+
+    # Calcular duración total del combo (servicios + buffers entre ellos)
+    buffer = SALON_CONFIG["buffer_minutos"]
+    duracion_total = sum(s["duracion_min"] for s in servicios_objs) + buffer * (len(servicios_objs) - 1)
+
+    # Determinar estilistas candidatos (deben poder hacer TODOS los servicios)
+    if req.estilista_id == "cualquiera":
+        estilistas_candidatos = [
+            e for e in ESTILISTAS
+            if all(estilista_hace_servicio(e, s["id"]) for s in servicios_objs)
+        ]
+    else:
+        est = obtener_estilista(req.estilista_id)
+        if not est:
+            return {"disponible": False, "mensaje_voz": f"No he encontrado a ese estilista. ¿Me lo puedes repetir?"}
+        no_hace = [s["nombre"] for s in servicios_objs if not estilista_hace_servicio(est, s["id"])]
+        if no_hace:
+            # Ver quién sí puede hacer todo
+            capaces = [
+                e["nombre"] for e in ESTILISTAS
+                if all(estilista_hace_servicio(e, s["id"]) for s in servicios_objs)
+            ]
+            if capaces:
+                capaces_str = " o ".join(capaces)
+                return {
+                    "disponible": False,
+                    "mensaje_voz": (
+                        f"{est['nombre']} no realiza {' ni '.join(no_hace)}. "
+                        f"Para hacer todos estos servicios juntos, puedes ir con {capaces_str}. ¿Te busco disponibilidad?"
+                    ),
+                }
+            else:
+                return {
+                    "disponible": False,
+                    "mensaje_voz": (
+                        "Ningún estilista puede hacer todos esos servicios. "
+                        "Podemos dividirlo en varias citas con distintas estilistas. ¿Quieres que te lo organice así?"
+                    ),
+                }
+        estilistas_candidatos = [est]
+
+    if not estilistas_candidatos:
+        # Nadie puede hacer TODOS → sugerir quién puede hacer más
+        mejor = max(ESTILISTAS, key=lambda e: sum(1 for s in servicios_objs if estilista_hace_servicio(e, s["id"])))
+        puede = [s["nombre"] for s in servicios_objs if estilista_hace_servicio(mejor, s["id"])]
+        no_puede = [s["nombre"] for s in servicios_objs if not estilista_hace_servicio(mejor, s["id"])]
+        return {
+            "disponible": False,
+            "mensaje_voz": (
+                f"Ningún estilista puede hacer todos esos servicios juntos. "
+                f"{mejor['nombre']} puede hacer {', '.join(puede)}, pero no {' ni '.join(no_puede)}. "
+                f"¿Quieres que divida la reserva en varias citas?"
+            ),
+        }
+
+    # Buscar el primer hueco donde todo el combo quepa seguido
+    conn = get_db()
+    ahora = ahora_madrid()
+    hoy = ahora.date()
+    dias_es = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+    meses_es = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
+
+    for i in range(req.dias_max):
+        fecha = hoy + timedelta(days=i)
+        horario = salon_abierto(fecha)
+        if not horario:
+            continue
+
+        cierra = datetime.strptime(horario["cierra"], "%H:%M")
+
+        for est in estilistas_candidatos:
+            if not estilista_trabaja(est, fecha):
+                continue
+
+            # Obtener TODOS los huecos para el servicio más largo (para tener slots candidatos)
+            # Luego verificar que el combo completo cabe desde cada slot
+            abre_dt = datetime.strptime(horario["abre"], "%H:%M")
+            slot = abre_dt
+
+            while slot + timedelta(minutes=duracion_total) <= cierra:
+                if fecha == hoy:
+                    hora_minima = (ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])).strftime("%H:%M")
+                    if slot.strftime("%H:%M") < hora_minima:
+                        slot += timedelta(minutes=15)
+                        continue
+
+                # Verificar que cada servicio del combo cabe en su franja
+                hora_cursor = slot
+                combo_cabe = True
+                citas_est = obtener_citas_estilista(conn, est["id"], fecha)
+
+                for s in servicios_objs:
+                    hora_ini_t = hora_cursor.time()
+                    hora_fin_t = (hora_cursor + timedelta(minutes=s["duracion_min"])).time()
+
+                    if hay_conflicto(citas_est, hora_ini_t, hora_fin_t, buffer):
+                        combo_cabe = False
+                        break
+
+                    # Avanzar cursor: duración del servicio + buffer
+                    hora_cursor = hora_cursor + timedelta(minutes=s["duracion_min"] + buffer)
+
+                if combo_cabe:
+                    conn.close()
+                    hora_inicio = slot.strftime("%H:%M")
+                    hora_fin_total = (slot + timedelta(minutes=duracion_total)).strftime("%H:%M")
+                    fecha_legible = f"{dias_es[fecha.weekday()]} {fecha.day} de {meses_es[fecha.month - 1]}"
+                    nombres_servicios = ", ".join(s["nombre"] for s in servicios_objs[:-1]) + " y " + servicios_objs[-1]["nombre"] if len(servicios_objs) > 1 else servicios_objs[0]["nombre"]
+
+                    return {
+                        "disponible": True,
+                        "fecha": fecha.isoformat(),
+                        "fecha_legible": fecha_legible,
+                        "hora_inicio": hora_inicio,
+                        "hora_inicio_legible": hora_a_texto(hora_inicio),
+                        "hora_fin": hora_fin_total,
+                        "hora_fin_legible": hora_a_texto(hora_fin_total),
+                        "estilista": est["nombre"],
+                        "estilista_id": est["id"],
+                        "servicios": [s["nombre"] for s in servicios_objs],
+                        "duracion_total_min": duracion_total,
+                        "mensaje_voz": (
+                            f"El primer hueco para {nombres_servicios} todo seguido es el {fecha_legible} "
+                            f"a {hora_a_texto(hora_inicio)} con {est['nombre']}. "
+                            f"Terminaríamos sobre {hora_a_texto(hora_fin_total)}, unas {duracion_total // 60} horas"
+                            f"{f' y {duracion_total % 60} minutos' if duracion_total % 60 else ''}. "
+                            f"¿Te viene bien?"
+                        ),
+                    }
+
+                slot += timedelta(minutes=15)
+
+    conn.close()
+    return {
+        "disponible": False,
+        "mensaje_voz": (
+            f"No he encontrado hueco para todos esos servicios seguidos en los próximos {req.dias_max} días. "
+            f"¿Quieres que lo divida en varias citas?"
+        ),
+    }
+
+
 @app.get("/disponibilidad/siguiente-hueco", summary="Primer hueco disponible para un servicio")
 def siguiente_hueco_disponible(
     servicio_id: str = Query(..., description="ID del servicio"),
