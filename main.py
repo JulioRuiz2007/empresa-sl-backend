@@ -1618,102 +1618,105 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
     try:
         fecha_dt = parsear_fecha(req.fecha)
     except ValueError:
-        raise HTTPException(400, f"No entendí la fecha '{req.fecha}'. Usa YYYY-MM-DD o un nombre de día como 'lunes'.")
+        return _error_combo(f"No he entendido bien la fecha. ¿Me la puedes repetir?")
 
     horario = salon_abierto(fecha_dt)
     if not horario:
-        raise HTTPException(400, f"El salón está cerrado los {dia_en_plural(fecha_dt)}.")
+        return _error_combo(f"El salón está cerrado los {dia_en_plural(fecha_dt)}. ¿Probamos otro día?")
 
     ahora = ahora_madrid()
     minimo = ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])
     if fecha_dt < minimo.date():
-        raise HTTPException(400, f"Las citas deben reservarse con al menos {SALON_CONFIG['antelacion_minima_horas']} horas de antelación.")
+        return _error_combo(f"Las citas necesitan al menos {SALON_CONFIG['antelacion_minima_horas']} horas de antelación. ¿Probamos con otro día u hora?")
 
     conn = get_db()
     buffer = SALON_CONFIG["buffer_minutos"]
     hora_actual = req.hora
     citas_creadas = []
+    error_msg = None
 
-    try:
-        for sid, servicio in zip(req.servicios, servicios_objs):
-            hora_fin_str = calcular_hora_fin(hora_actual, servicio["duracion_min"])
-            hora_fin_t = datetime.strptime(hora_fin_str, "%H:%M").time()
-            hora_cierra = datetime.strptime(horario["cierra"], "%H:%M").time()
+    for sid, servicio in zip(req.servicios, servicios_objs):
+        hora_fin_str = calcular_hora_fin(hora_actual, servicio["duracion_min"])
+        hora_fin_t = datetime.strptime(hora_fin_str, "%H:%M").time()
+        hora_cierra = datetime.strptime(horario["cierra"], "%H:%M").time()
 
-            if hora_fin_t > hora_cierra:
-                raise HTTPException(
-                    400,
-                    f"El servicio '{servicio['nombre']}' terminaría a las {hora_fin_str}, "
-                    f"fuera del horario de cierre ({horario['cierra']}). "
-                    f"Elige una hora de inicio más temprana."
+        if hora_fin_t > hora_cierra:
+            error_msg = (
+                f"El servicio {servicio['nombre']} terminaría después del cierre. "
+                f"¿Probamos con una hora más temprana?"
+            )
+            break
+
+        hora_inicio_t = datetime.strptime(hora_actual, "%H:%M").time()
+
+        # Encontrar estilista disponible para este servicio y horario
+        if req.estilista_id == "cualquiera":
+            estilista = buscar_mejor_estilista(conn, sid, fecha_dt, hora_actual, servicio["duracion_min"])
+            if not estilista:
+                error_msg = (
+                    f"No hay estilista disponible para {servicio['nombre']} a esa hora. "
+                    f"¿Probamos con otro horario?"
                 )
+                break
+        else:
+            estilista = obtener_estilista(req.estilista_id)
+            if not estilista:
+                error_msg = f"No he encontrado a ese estilista. ¿Me lo puedes repetir?"
+                break
+            if not estilista_hace_servicio(estilista, sid):
+                otros = [e["nombre"] for e in ESTILISTAS if estilista_hace_servicio(e, sid)]
+                otros_str = " o ".join(otros) if otros else "ningún estilista disponible"
+                error_msg = f"{estilista['nombre']} no realiza {servicio['nombre']}. Para ese servicio puedes ir con {otros_str}."
+                break
+            if not estilista_trabaja(estilista, fecha_dt):
+                error_msg = f"{estilista['nombre']} no trabaja ese día. ¿Probamos otro día?"
+                break
+            citas_est = obtener_citas_estilista(conn, estilista["id"], fecha_dt)
+            ids_ya_creadas = [c["cita_id"] for c in citas_creadas]
+            citas_est = [c for c in citas_est if c["id"] not in ids_ya_creadas]
+            if hay_conflicto(citas_est, hora_inicio_t, hora_fin_t, buffer):
+                error_msg = f"{estilista['nombre']} no está disponible a esa hora para {servicio['nombre']}. ¿Probamos otro horario?"
+                break
 
-            hora_inicio_t = datetime.strptime(hora_actual, "%H:%M").time()
+        cita_id = _insert(
+            conn,
+            """INSERT INTO citas
+               (cliente_nombre, cliente_telefono, cliente_nuevo, servicio_id, estilista_id,
+                fecha, hora_inicio, hora_fin, duracion_min, precio_estimado, notas, estado)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmada')""",
+            (req.cliente_nombre, req.cliente_telefono, 1 if req.cliente_nuevo else 0,
+             sid, estilista["id"], fecha_dt.isoformat(), hora_actual, hora_fin_str,
+             servicio["duracion_min"], servicio["precio"], req.notas),
+        )
+        conn.commit()
 
-            # Encontrar estilista disponible para este servicio y horario
-            if req.estilista_id == "cualquiera":
-                estilista = buscar_mejor_estilista(conn, sid, fecha_dt, hora_actual, servicio["duracion_min"])
-                if not estilista:
-                    ids_creadas = [c["cita_id"] for c in citas_creadas]
-                    raise HTTPException(
-                        409,
-                        f"No hay estilista disponible para '{servicio['nombre']}' a las {hora_actual}. "
-                        f"Prueba una hora diferente."
-                    )
-            else:
-                estilista = obtener_estilista(req.estilista_id)
-                if not estilista:
-                    raise HTTPException(404, f"Estilista '{req.estilista_id}' no encontrado.")
-                if not estilista_hace_servicio(estilista, sid):
-                    raise HTTPException(400, f"{estilista['nombre']} no realiza '{servicio['nombre']}'.")
-                if not estilista_trabaja(estilista, fecha_dt):
-                    raise HTTPException(400, f"{estilista['nombre']} no trabaja los {dia_en_plural(fecha_dt)}.")
-                citas_est = obtener_citas_estilista(conn, estilista["id"], fecha_dt)
-                # Excluir las citas del combo ya creadas para evitar falsos conflictos
-                ids_ya_creadas = [c["cita_id"] for c in citas_creadas]
-                citas_est = [c for c in citas_est if c["id"] not in ids_ya_creadas]
-                if hay_conflicto(citas_est, hora_inicio_t, hora_fin_t, buffer):
-                    raise HTTPException(409, f"{estilista['nombre']} no está disponible para '{servicio['nombre']}' a las {hora_actual}.")
+        citas_creadas.append({
+            "cita_id": cita_id,
+            "servicio": servicio["nombre"],
+            "estilista": estilista["nombre"],
+            "hora_inicio": hora_actual,
+            "hora_fin": hora_fin_str,
+            "precio_desde": servicio["precio"],
+        })
 
-            cita_id = _insert(
-                conn,
-                """INSERT INTO citas
-                   (cliente_nombre, cliente_telefono, cliente_nuevo, servicio_id, estilista_id,
-                    fecha, hora_inicio, hora_fin, duracion_min, precio_estimado, notas, estado)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'confirmada')""",
-                (req.cliente_nombre, req.cliente_telefono, 1 if req.cliente_nuevo else 0,
-                 sid, estilista["id"], fecha_dt.isoformat(), hora_actual, hora_fin_str,
-                 servicio["duracion_min"], servicio["precio"], req.notas),
-            )
-            conn.commit()
+        background_tasks.add_task(
+            _bg_gcal_crear, cita_id,
+            f"{servicio['nombre']} — {req.cliente_nombre} (con {estilista['nombre']})",
+            req.fecha, hora_actual, hora_fin_str, req.notas, sid, req.cliente_telefono,
+            estilista["id"],
+        )
 
-            citas_creadas.append({
-                "cita_id": cita_id,
-                "servicio": servicio["nombre"],
-                "estilista": estilista["nombre"],
-                "hora_inicio": hora_actual,
-                "hora_fin": hora_fin_str,
-                "precio_desde": servicio["precio"],
-            })
+        # El siguiente servicio empieza cuando termina éste + buffer
+        siguiente_inicio = datetime.strptime(hora_fin_str, "%H:%M") + timedelta(minutes=buffer)
+        hora_actual = siguiente_inicio.strftime("%H:%M")
 
-            background_tasks.add_task(
-                _bg_gcal_crear, cita_id,
-                f"{servicio['nombre']} — {req.cliente_nombre} (con {estilista['nombre']})",
-                req.fecha, hora_actual, hora_fin_str, req.notas, sid, req.cliente_telefono,
-                estilista["id"],
-            )
-
-            # El siguiente servicio empieza cuando termina éste + buffer
-            siguiente_inicio = datetime.strptime(hora_fin_str, "%H:%M") + timedelta(minutes=buffer)
-            hora_actual = siguiente_inicio.strftime("%H:%M")
-
-    except HTTPException:
-        # Si algo falla a mitad del combo, cancelar las citas ya creadas
+    # Si hubo error, cancelar las citas ya creadas y devolver error amigable
+    if error_msg:
         for c in citas_creadas:
             _exec(conn, "UPDATE citas SET estado = 'cancelada' WHERE id = ?", (c["cita_id"],))
         conn.commit()
         conn.close()
-        raise
+        return _error_combo(error_msg)
 
     conn.close()
 
