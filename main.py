@@ -1781,8 +1781,15 @@ def proximos_dias_disponibles(
     _ids_cache_pd = {}
     for i in range(dias):
         fecha = hoy + timedelta(days=i)
-        if not salon_abierto(fecha):
+        horario_dia = salon_abierto(fecha)
+        if not horario_dia:
             continue
+
+        # Si es hoy y ya pasó el cierre, saltar
+        if fecha == hoy:
+            hora_cierre = datetime.strptime(horario_dia["cierra"], "%H:%M").time()
+            if ahora.time() >= hora_cierre:
+                continue
 
         estilistas_validos = [e for e in estilistas_base if estilista_trabaja(e, fecha)]
         if not estilistas_validos:
@@ -1797,7 +1804,8 @@ def proximos_dias_disponibles(
 
             # Filtrar horas pasadas si es hoy
             if fecha == hoy:
-                hora_minima = (ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])).strftime("%H:%M")
+                minimo_dt = ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])
+                hora_minima = minimo_dt.strftime("%H:%M") if minimo_dt.date() == hoy else "23:59"
                 huecos = [h for h in huecos if h >= hora_minima]
 
             if huecos:
@@ -2059,18 +2067,23 @@ def siguiente_hueco_combo(req: SiguienteHuecoComboRequest):
 
         cierra = datetime.strptime(horario["cierra"], "%H:%M")
 
+        # Si es hoy y ya pasó la hora de cierre, saltar al siguiente día
+        if fecha == hoy:
+            hora_cierre = datetime.strptime(horario["cierra"], "%H:%M").time()
+            if ahora.time() >= hora_cierre:
+                continue
+
         for est in estilistas_candidatos:
             if not estilista_trabaja(est, fecha):
                 continue
 
-            # Obtener TODOS los huecos para el servicio más largo (para tener slots candidatos)
-            # Luego verificar que el combo completo cabe desde cada slot
             abre_dt = datetime.strptime(horario["abre"], "%H:%M")
             slot = abre_dt
 
             while slot + timedelta(minutes=duracion_total) <= cierra:
                 if fecha == hoy:
-                    hora_minima = (ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])).strftime("%H:%M")
+                    minimo_dt = ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])
+                    hora_minima = minimo_dt.strftime("%H:%M") if minimo_dt.date() == hoy else "23:59"
                     if slot.strftime("%H:%M") < hora_minima:
                         slot += timedelta(minutes=15)
                         continue
@@ -2185,8 +2198,15 @@ def _siguiente_hueco(servicio_id: str, estilista_id: str = "cualquiera", dias_ma
     _ids_cache = {}  # cache de ids confirmadas por fecha para no repetir queries
     for i in range(dias_max):
         fecha = hoy + timedelta(days=i)
-        if not salon_abierto(fecha):
+        horario = salon_abierto(fecha)
+        if not horario:
             continue
+
+        # Si es hoy y ya pasó la hora de cierre, saltar al siguiente día
+        if fecha == hoy:
+            hora_cierre = datetime.strptime(horario["cierra"], "%H:%M").time()
+            if ahora.time() >= hora_cierre:
+                continue
 
         if fecha not in _ids_cache:
             _ids_cache[fecha] = obtener_ids_confirmadas_dia(conn, fecha)
@@ -2198,7 +2218,9 @@ def _siguiente_hueco(servicio_id: str, estilista_id: str = "cualquiera", dias_ma
             huecos = encontrar_huecos_libres(conn, est["id"], fecha, servicio["duracion_min"], _ids_cache[fecha])
 
             if fecha == hoy:
-                hora_minima = (ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])).strftime("%H:%M")
+                # Filtrar huecos que no cumplen la antelación mínima
+                minimo_dt = ahora + timedelta(hours=SALON_CONFIG["antelacion_minima_horas"])
+                hora_minima = minimo_dt.strftime("%H:%M") if minimo_dt.date() == hoy else "23:59"
                 huecos = [h for h in huecos if h >= hora_minima]
 
             if huecos:
