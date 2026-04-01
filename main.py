@@ -1728,6 +1728,14 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
     meses_es = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"]
     fecha_legible_combo = f"{dias_es[fecha_dt.weekday()]} {fecha_dt.day} de {meses_es[fecha_dt.month-1]}"
 
+    # Construir info de estilistas para mensaje_voz
+    estilistas_unicos = list(dict.fromkeys(c["estilista"] for c in citas_creadas))
+    if len(estilistas_unicos) == 1:
+        info_estilista = f" con {estilistas_unicos[0]}"
+    else:
+        detalles = [f"{c['servicio']} con {c['estilista']}" for c in citas_creadas]
+        info_estilista = ": " + " y ".join(detalles)
+
     return {
         "exito": True,
         "citas": citas_creadas,
@@ -1742,7 +1750,7 @@ def crear_combo(req: CrearComboRequest, background_tasks: BackgroundTasks):
         },
         "mensaje": f"Combo confirmado: {nombres_servicios} el {fecha_legible_combo} de {hora_a_texto(req.hora)} a {hora_a_texto(hora_fin_total)}.",
         "mensaje_voz": (
-            f"¡Perfecto, {nombre_corto}! He reservado {nombres_servicios} para el {fecha_legible_combo}. "
+            f"¡Perfecto, {nombre_corto}! He reservado {nombres_servicios}{info_estilista} para el {fecha_legible_combo}. "
             f"Empezamos a {hora_a_texto(req.hora)} y terminamos sobre {hora_a_texto(hora_fin_total)}. "
             f"El precio total es desde {total_precio:.0f} euros. ¿Necesitas algo más?"
         ),
@@ -1975,6 +1983,7 @@ def siguiente_hueco_post(req: SiguienteHuecoRequest):
 class SiguienteHuecoComboRequest(BaseModel):
     servicios: list = Field(..., description="Lista de IDs de servicios en orden, ej: ['corte', 'coloracion', 'facial']")
     estilista_id: str = Field(default="cualquiera", description="ID del estilista o 'cualquiera'")
+    fecha_inicio: str = Field(default="hoy", description="Fecha desde la que buscar (YYYY-MM-DD, 'hoy', 'mañana', nombre de día...)")
     dias_max: int = Field(default=14, ge=1, le=30)
 
 
@@ -2056,11 +2065,19 @@ def siguiente_hueco_combo(req: SiguienteHuecoComboRequest):
     conn = get_db()
     ahora = ahora_madrid()
     hoy = ahora.date()
+
+    # Parsear fecha_inicio para permitir "mañana", "jueves", etc.
+    try:
+        fecha_desde = parsear_fecha(req.fecha_inicio)
+    except Exception:
+        fecha_desde = hoy
+    if fecha_desde < hoy:
+        fecha_desde = hoy
     dias_es = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
     meses_es = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre", "diciembre"]
 
     for i in range(req.dias_max):
-        fecha = hoy + timedelta(days=i)
+        fecha = fecha_desde + timedelta(days=i)
         horario = salon_abierto(fecha)
         if not horario:
             continue
