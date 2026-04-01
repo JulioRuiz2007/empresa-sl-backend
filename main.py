@@ -75,19 +75,19 @@ ESTILISTAS = [
     {
         "id": "maria",
         "nombre": "María García",
-        "especialidades": ["coloracion", "corte", "brushing"],
+        "especialidades": ["corte", "coloracion", "brushing", "unas", "facial", "depilacion"],
         "dias_trabaja": [0, 1, 2, 3, 4, 5],  # Lunes a Sábado
     },
     {
         "id": "lucia",
         "nombre": "Lucía Fernández",
-        "especialidades": ["corte", "brushing", "depilacion"],
+        "especialidades": ["corte", "coloracion", "brushing", "unas", "facial", "depilacion"],
         "dias_trabaja": [0, 1, 2, 3, 4],  # Lunes a Viernes (no sábados)
     },
     {
         "id": "carmen",
         "nombre": "Carmen Ruiz",
-        "especialidades": ["unas", "facial", "depilacion", "brushing"],
+        "especialidades": ["corte", "coloracion", "brushing", "unas", "facial", "depilacion"],
         "dias_trabaja": [0, 2, 3, 4, 5],  # No trabaja los martes
     },
 ]
